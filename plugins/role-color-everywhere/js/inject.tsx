@@ -274,26 +274,41 @@ export function installMessageMentionColors(ctx: PatchContext & MemberContext & 
         installed.add(target)
         try {
             ctx.cleanup(before(target, 'updateRows', (args: any[]) => {
+                // Valenced before hooks must always return the original argument list.
+                if (!Array.isArray(args)) return args
+
                 try {
-                    if (!readSettings(ctx.storage).userMentions || !Array.isArray(args) || typeof args[1] !== 'string') return
-                    const rows = JSON.parse(args[1])
-                    if (!Array.isArray(rows)) return
-                    let changed = false
-                    for (const row of rows) {
-                        try {
-                            patchMessageRow(row, ctx)
-                            changed = true
-                        } catch (err) {
-                            report(`${TAG} skipped one message row`, err)
+                    if (!readSettings(ctx.storage).userMentions) return args
+
+                    const payload = args[1]
+                    if (payload && typeof payload === 'object' && Array.isArray(payload.rows)) {
+                        // Current Discord/Valenced builds pass updateRows(ref, { rows }).
+                        for (const row of payload.rows) {
+                            try {
+                                patchMessageRow(row, ctx)
+                            } catch (err) {
+                                report(`${TAG} skipped one message row`, err)
+                            }
                         }
-                    }
-                    if (changed) {
+                    } else if (typeof payload === 'string') {
+                        // Keep compatibility with older builds that serialize rows as JSON.
+                        const rows = JSON.parse(payload)
+                        if (!Array.isArray(rows)) return args
+
+                        for (const row of rows) {
+                            try {
+                                patchMessageRow(row, ctx)
+                            } catch (err) {
+                                report(`${TAG} skipped one message row`, err)
+                            }
+                        }
                         args[1] = JSON.stringify(rows)
-                        return args
                     }
                 } catch (err) {
                     report(`${TAG} could not transform Android message rows`, err)
                 }
+
+                return args
             }))
             report(`${TAG} Android updateRows patch installed (${label})`)
             return true
