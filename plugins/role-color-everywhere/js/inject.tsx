@@ -1,6 +1,6 @@
 import { after, before, instead } from '@valenced/patcher'
 import { getModules } from '@valenced/modules/finders'
-import { withName } from '@valenced/modules/finders/filters'
+import { withName, withProps } from '@valenced/modules/finders/filters'
 import { ReactNative } from '@valenced/react'
 import { readSettings } from './settings-store'
 import { report, TAG } from './lookup'
@@ -10,49 +10,159 @@ interface PatchContext {
     cleanup: (undo: () => void) => void
 }
 
-function roleColor(memberStore: any, guildId: string | undefined, userId: string | undefined): string | undefined {
-    if (!guildId || !userId) return undefined
+interface MemberContext {
+    memberStore: any
+    getRoleStore: () => any
+}
+
+function normalizeHex(value: unknown): string | undefined {
+    if (typeof value !== 'string') return undefined
+    const hex = value.trim().replace(/^#/, '')
+    return /^[0-9a-f]{6}$/i.test(hex) ? `#${hex.toUpperCase()}` : undefined
+}
+
+function colorFromRole(role: any): string | undefined {
+    const direct = normalizeHex(role?.colorString)
+        ?? normalizeHex(role?.colorStrings?.primaryColor)
+        ?? normalizeHex(role?.primaryColor)
+    if (direct) return direct
+
+    const numeric = role?.color
+    if (typeof numeric === 'number' && Number.isFinite(numeric) && numeric > 0 && numeric <= 0xFFFFFF) {
+        return `#${Math.trunc(numeric).toString(16).padStart(6, '0').toUpperCase()}`
+    }
+    return undefined
+}
+
+/** Treat grayscale and near-white / near-black role colors as neutral. */
+function isNeutralColor(hex: string): boolean {
+    const clean = hex.replace('#', '')
+    const r = Number.parseInt(clean.slice(0, 2), 16)
+    const g = Number.parseInt(clean.slice(2, 4), 16)
+    const b = Number.parseInt(clean.slice(4, 6), 16)
+    const max = Math.max(r, g, b)
+    const min = Math.min(r, g, b)
+    const saturation = max === 0 ? 0 : (max - min) / max
+    const lightness = (max + min) / 510
+
+    // Skip grays at any brightness, plus strongly dark or nearly white colors.
+    return saturation < 0.16 || lightness <= 0.075 || lightness >= 0.93
+}
+
+function getMemberRecord(memberStore: any, guildId: string, userId: string): any {
     try {
-        const member = memberStore?.getMember?.(guildId, userId)
+        return memberStore?.getMember?.(guildId, userId)
             ?? memberStore?.getTrueMember?.(guildId, userId)
-        const color = member?.colorString
-        return typeof color === 'string' && /^#?[0-9a-f]{6}$/i.test(color) ? (color.startsWith('#') ? color : `#${color}`) : undefined
+            ?? undefined
     } catch (err) {
-        report(`${TAG} member color lookup failed`, err)
+        report(`${TAG} member lookup failed`, err)
         return undefined
     }
 }
 
-function patchComponents(component: any, transform: (node: any) => any): any {
-    if (!component || typeof component !== 'object') return component
+function getAssignedRoles(member: any, roleStore: any, guildId: string): any[] {
+    const memberRoleIds: string[] = Array.isArray(member?.roles)
+        ? member.roles.map((role: any) => typeof role === 'string' ? role : role?.id).filter(Boolean)
+        : Array.isArray(member?.roleIds)
+            ? member.roleIds.filter((id: any) => typeof id === 'string')
+            : []
 
-    if (Array.isArray(component.content)) {
-        component.content = component.content.map((child: any) => patchComponents(child, transform))
-    }
-    if (Array.isArray(component.items)) {
-        component.items = component.items.map((child: any) => patchComponents(child, transform))
-    }
-    if (Array.isArray(component)) {
-        component = component.map((child: any) => patchComponents(child, transform))
+    if (!memberRoleIds.length) return []
+
+    const assigned = new Set(memberRoleIds)
+    const rolesById = new Map<string, any>()
+
+    for (const roleId of memberRoleIds) {
+        try {
+            const role = roleStore?.getRole?.(guildId, roleId)
+            if (role) rolesById.set(String(role.id ?? roleId), role)
+        } catch {
+            // Fall back to the sorted role list below.
+        }
     }
 
-    if (component.type) {
-        const changed = transform(component)
-        if (changed) component = changed
+    let sortedGuildRoles: any[] = []
+    try {
+        const result = roleStore?.getSortedRoles?.(guildId)
+        if (Array.isArray(result)) sortedGuildRoles = result
+    } catch {
+        // A member's explicit role IDs are still usable if sorted roles are unavailable.
     }
-    return component
+
+    for (const role of sortedGuildRoles) {
+        if (role?.id && assigned.has(String(role.id)) && !rolesById.has(String(role.id))) {
+            rolesById.set(String(role.id), role)
+        }
+    }
+
+    const ordered = [...rolesById.values()]
+    const sortedIndex = new Map(sortedGuildRoles.map((role, index) => [String(role?.id), index]))
+    ordered.sort((a, b) => {
+        const aPosition = Number(a?.position)
+        const bPosition = Number(b?.position)
+        if (Number.isFinite(aPosition) && Number.isFinite(bPosition) && aPosition !== bPosition) {
+            return bPosition - aPosition
+        }
+        return (sortedIndex.get(String(a?.id)) ?? 0) - (sortedIndex.get(String(b?.id)) ?? 0)
+    })
+    return ordered
 }
 
-function patchMessageRow(row: any, memberStore: any, channelStore: any): void {
+/**
+ * Pick the highest role that has a usable color. With neutral-color skipping enabled,
+ * white, black and gray roles are ignored and the next highest colored role is used.
+ */
+function roleColor(
+    ctx: MemberContext,
+    guildId: string | undefined,
+    userId: string | undefined,
+    skipNeutralColors: boolean,
+    fallbackMember?: any,
+): string | undefined {
+    if (!guildId || !userId) return undefined
+    const member = getMemberRecord(ctx.memberStore, guildId, userId) ?? fallbackMember
+    if (!member) return undefined
+
+    const roles = getAssignedRoles(member, ctx.getRoleStore(), guildId)
+    for (const role of roles) {
+        const color = colorFromRole(role)
+        if (!color) continue
+        if (skipNeutralColors && isNeutralColor(color)) continue
+        return color
+    }
+
+    // Older Discord builds sometimes omit the role IDs from the cached member record.
+    const resolved = normalizeHex(member.colorString)
+    if (resolved && (!skipNeutralColors || !isNeutralColor(resolved))) return resolved
+    return undefined
+}
+
+function patchComponents(component: any, transform: (node: any) => any): any {
+    if (Array.isArray(component)) return component.map((child) => patchComponents(child, transform))
+    if (!component || typeof component !== 'object') return component
+
+    let next = component
+    if (Array.isArray(component.content)) {
+        next = { ...next, content: component.content.map((child: any) => patchComponents(child, transform)) }
+    }
+    if (Array.isArray(component.items)) {
+        next = { ...next, items: component.items.map((child: any) => patchComponents(child, transform)) }
+    }
+
+    if (next.type) return transform(next) ?? next
+    return next
+}
+
+function patchMessageRow(row: any, ctx: PatchContext & MemberContext): void {
     const message = row?.message
     if (!message) return
 
-    const channel = channelStore?.getChannel?.(message.channelId)
+    const settings = readSettings(ctx.storage)
+    if (!settings.userMentions) return
+
+    const channel = ctx.channelStore?.getChannel?.(message.channelId)
     const guildId = channel?.guild_id ?? channel?.guildId ?? message.guildId
     if (!guildId) return
-
-    const settings = readSettings(undefined)
-    if (!settings.userMentions) return
 
     message.shouldShowRoleOnName = true
     if (message.referencedMessage?.message) {
@@ -61,58 +171,95 @@ function patchMessageRow(row: any, memberStore: any, channelStore: any): void {
 
     const patchMention = (node: any) => {
         if (node?.type !== 'mention' || !node.userId) return undefined
-        const color = roleColor(memberStore, guildId, String(node.userId))
+        const color = roleColor(ctx, String(guildId), String(node.userId), settings.skipNeutralColors)
         if (!color) return undefined
-        const numeric = Number.parseInt(color.replace('#', ''), 16)
+        const numeric = Number.parseInt(color.slice(1), 16)
         return { ...node, roleColor: numeric, color: numeric, colorString: color }
     }
 
-    if (Array.isArray(message.content)) {
-        message.content = patchComponents({ content: message.content }, (node) => patchMention(node)).content
+    if (message.content !== undefined) {
+        message.content = patchComponents(message.content, patchMention)
     }
     if (Array.isArray(message.embeds)) {
         for (const embed of message.embeds) {
-            if (Array.isArray(embed?.description)) {
-                embed.description = patchComponents({ content: embed.description }, (node) => patchMention(node)).content
+            if (embed?.description !== undefined) {
+                embed.description = patchComponents(embed.description, patchMention)
             }
         }
     }
     const referenced = message.referencedMessage?.message
-    if (Array.isArray(referenced?.content)) {
-        referenced.content = patchComponents({ content: referenced.content }, (node) => patchMention(node)).content
+    if (referenced?.content !== undefined) {
+        referenced.content = patchComponents(referenced.content, patchMention)
     }
 }
 
-export function installMessageMentionColors(ctx: PatchContext & { memberStore: any; channelStore: any }): void {
-    const nativeModules = ReactNative?.NativeModules as any
-    const chatManager = nativeModules?.DCDChatManager ?? (globalThis as any).nativeModuleProxy?.DCDChatManager
-
-    if (typeof chatManager?.updateRows !== 'function') {
-        report(`${TAG} DCDChatManager.updateRows not found; Android message mention patch not installed`)
-        return
-    }
-
+function isNativeUpdateRows(target: any): boolean {
     try {
-        ctx.cleanup(before(chatManager, 'updateRows', (args: any[]) => {
-            try {
-                if (!readSettings(ctx.storage).userMentions) return
-                if (typeof args?.[1] !== 'string') return
-                const rows = JSON.parse(args[1])
-                if (!Array.isArray(rows)) return
-                for (const row of rows) {
-                    try { patchMessageRow(row, ctx.memberStore, ctx.channelStore) }
-                    catch (err) { report(`${TAG} skipped one message row`, err) }
-                }
-                args[1] = JSON.stringify(rows)
-                return args
-            } catch (err) {
-                report(`${TAG} could not transform Android message rows`, err)
-            }
-        }))
-        report(`${TAG} Android message mention patch installed`)
-    } catch (err) {
-        report(`${TAG} failed to patch DCDChatManager.updateRows`, err)
+        return typeof target?.updateRows === 'function' && target.updateRows.toString().includes('[native code]')
+    } catch {
+        return false
     }
+}
+
+export function installMessageMentionColors(ctx: PatchContext & MemberContext & { channelStore: any }): void {
+    const installed = new WeakSet<object>()
+
+    const patchTarget = (target: any, label: string) => {
+        if (!target || typeof target !== 'object' || installed.has(target) || typeof target.updateRows !== 'function') return false
+        installed.add(target)
+        try {
+            ctx.cleanup(before(target, 'updateRows', (args: any[]) => {
+                try {
+                    if (!readSettings(ctx.storage).userMentions || !Array.isArray(args) || typeof args[1] !== 'string') return
+                    const rows = JSON.parse(args[1])
+                    if (!Array.isArray(rows)) return
+                    let changed = false
+                    for (const row of rows) {
+                        try {
+                            patchMessageRow(row, ctx)
+                            changed = true
+                        } catch (err) {
+                            report(`${TAG} skipped one message row`, err)
+                        }
+                    }
+                    if (changed) {
+                        args[1] = JSON.stringify(rows)
+                        return args
+                    }
+                } catch (err) {
+                    report(`${TAG} could not transform Android message rows`, err)
+                }
+            }))
+            report(`${TAG} Android updateRows patch installed (${label})`)
+            return true
+        } catch (err) {
+            report(`${TAG} failed to patch updateRows (${label})`, err)
+            return false
+        }
+    }
+
+    // Some Discord builds expose the native bridge directly. On others it is a Metro module
+    // whose native updateRows method must be discovered after modules initialize.
+    const nativeModules = ReactNative?.NativeModules as any
+    const directTarget = nativeModules?.DCDChatManager
+    if (directTarget && typeof directTarget.updateRows === 'function') {
+        patchTarget(directTarget, 'NativeModules.DCDChatManager')
+    }
+
+    let unsubscribe: (() => void) | undefined
+    unsubscribe = getModules(
+        withProps('updateRows'),
+        (module: any) => {
+            const candidates = [module, module?.default]
+            const target = candidates.find(isNativeUpdateRows)
+            if (!target) return
+            if (patchTarget(target, 'Metro native updateRows')) {
+                unsubscribe?.()
+            }
+        },
+        { returnNamespace: true },
+    )
+    ctx.cleanup(unsubscribe)
 }
 
 function findNode(root: any, predicate: (node: any) => boolean, seen = new Set<any>()): any {
@@ -127,23 +274,20 @@ function findNode(root: any, predicate: (node: any) => boolean, seen = new Set<a
             if (found) return found
         }
     } else if (children && typeof children === 'object') {
-        const found = findNode(children, predicate, seen)
-        if (found) return found
+        return findNode(children, predicate, seen)
     }
     return undefined
 }
 
-export function installVoiceUserColors(ctx: PatchContext & { getMemberStore: () => any }): void {
+export function installVoiceUserColors(ctx: PatchContext & MemberContext): void {
     let installed = false
-    const unsubscribe = getModules(
+    let unsubscribe: (() => void) | undefined
+    unsubscribe = getModules(
         withName('VoiceUserConnected'),
         (voiceModule: any) => {
             if (installed) return
             const component = voiceModule?.default
-            if (typeof component !== 'function') {
-                report(`${TAG} VoiceUserConnected export has an unexpected shape`)
-                return
-            }
+            if (typeof component !== 'function') return
             installed = true
 
             try {
@@ -151,10 +295,13 @@ export function installVoiceUserColors(ctx: PatchContext & { getMemberStore: () 
                     const result = original.apply(this, args)
                     if (!readSettings(ctx.storage).voiceUsers || !result?.type) return result
 
-                    const member = args?.[0]?.member
-                    const color = roleColor(ctx.getMemberStore(), member?.guildId ?? member?.guild_id, member?.userId ?? member?.user?.id)
-                        ?? member?.colorString
-                    if (!color || typeof color !== 'string') return result
+                    const props = args?.[0] ?? {}
+                    const member = props?.member
+                    const guildId = props?.guildId ?? member?.guildId ?? member?.guild_id
+                    const userId = member?.userId ?? member?.user?.id ?? props?.user?.id
+                    const settings = readSettings(ctx.storage)
+                    const color = roleColor(ctx, guildId, userId, settings.skipNeutralColors, member)
+                    if (!color) return result
 
                     const innerComponent = result.type
                     if (innerComponent && typeof innerComponent === 'object' && typeof innerComponent.type === 'function') {
@@ -162,15 +309,14 @@ export function installVoiceUserColors(ctx: PatchContext & { getMemberStore: () 
                         unpatchInner = after(innerComponent, 'type', (innerResult: any) => {
                             unpatchInner?.()
                             const nameItem = findNode(innerResult, (node) => node?.type?.name === 'VoiceUserNameItem')
-                            if (nameItem?.props) {
-                                nameItem.props = { ...nameItem.props, color }
-                            }
+                            if (nameItem?.props) nameItem.props = { ...nameItem.props, color }
                             return innerResult
                         })
                     }
                     return result
                 }))
                 report(`${TAG} voice participant color patch installed`)
+                unsubscribe?.()
             } catch (err) {
                 report(`${TAG} failed to patch VoiceUserConnected`, err)
             }
