@@ -524,6 +524,47 @@ function colorTypingTextTree(
         : React.cloneElement(node, { children: newChildren })
 }
 
+/**
+ * Apply a role color to every Design.Text node in a rendered typing-user
+ * subtree. This helper is intentionally local to the typing patch and leaves
+ * non-text nodes and their children intact.
+ */
+function colorDesignTextNodes(node: any, color: string, depth = 0): any {
+    if (depth > 20 || node == null) return node
+
+    if (Array.isArray(node)) {
+        let changed = false
+        const next = node.map(child => {
+            const patched = colorDesignTextNodes(child, color, depth + 1)
+            if (patched !== child) changed = true
+            return patched
+        })
+        return changed ? next : node
+    }
+
+    if (typeof React?.isValidElement !== 'function' || !React.isValidElement(node)) {
+        return node
+    }
+
+    const oldChildren = node.props?.children
+    const newChildren = colorDesignTextNodes(oldChildren, color, depth + 1)
+    const isDesignText = node.type === Design?.Text
+    const style = isDesignText
+        ? [node.props?.style, { color }]
+        : node.props?.style
+
+    if (isDesignText) {
+        return React.cloneElement(node, {
+            style,
+            ...(newChildren !== oldChildren ? { children: newChildren } : {}),
+        })
+    }
+
+    return newChildren === oldChildren
+        ? node
+        : React.cloneElement(node, { children: newChildren })
+}
+
 interface BetterTypingRenderContext {
     channel: any
     typingUserIds: string[]
