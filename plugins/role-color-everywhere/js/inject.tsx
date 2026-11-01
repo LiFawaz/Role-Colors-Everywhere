@@ -314,11 +314,29 @@ export function installVoiceUserColors(ctx: PatchContext & MemberContext): void 
                     if (!readSettings(ctx.storage).voiceUsers || !result?.type) return result
 
                     const props = args?.[0] ?? {}
-                    const member = props?.member
-                    const guildId = props?.guildId ?? member?.guildId ?? member?.guild_id
-                    const userId = member?.userId ?? member?.user?.id ?? props?.user?.id
+                    const member = props?.member ?? props?.voiceState?.member ?? props?.user?.member
+                    const fallbackMember = member ?? props?.user
+                    const guildId = props?.guildId
+                        ?? props?.guild_id
+                        ?? props?.guild?.id
+                        ?? props?.channel?.guild_id
+                        ?? member?.guildId
+                        ?? member?.guild_id
+                    const userId = props?.userId
+                        ?? props?.user_id
+                        ?? member?.userId
+                        ?? member?.user_id
+                        ?? member?.user?.id
+                        ?? member?.id
+                        ?? props?.user?.id
                     const settings = readSettings(ctx.storage)
-                    const color = roleColor(ctx, guildId, userId, settings.skipNeutralColors, member)
+                    const color = roleColor(
+                        ctx,
+                        guildId == null ? undefined : String(guildId),
+                        userId == null ? undefined : String(userId),
+                        settings.skipNeutralColors,
+                        fallbackMember,
+                    )
                     if (!color) return result
 
                     const innerComponent = result.type
