@@ -30,6 +30,9 @@ export default plugin({
         let channelStore: any
         let roleStore: any
         let userStore: any
+        let typingStore: any
+        let selectedChannelStore: any
+        let relationshipStore: any
         let mentionPatchInstalled = false
 
         const installMentionsWhenReady = () => {
@@ -64,6 +67,18 @@ export default plugin({
                 userStore = store
                 log?.info?.(`${TAG} UserStore connected`)
             }))
+            cleanup(getStore('TypingStore', (store: any) => {
+                typingStore = store
+                log?.info?.(`${TAG} TypingStore connected`)
+            }))
+            cleanup(getStore('SelectedChannelStore', (store: any) => {
+                selectedChannelStore = store
+                log?.info?.(`${TAG} SelectedChannelStore connected`)
+            }))
+            cleanup(getStore('RelationshipStore', (store: any) => {
+                relationshipStore = store
+                log?.info?.(`${TAG} RelationshipStore connected`)
+            }))
 
             installVoiceUserColors({
                 getMemberStore: () => memberStore,
@@ -75,6 +90,10 @@ export default plugin({
                 getMemberStore: () => memberStore,
                 getRoleStore: () => roleStore,
                 getUserStore: () => userStore,
+                getTypingStore: () => typingStore,
+                getSelectedChannelStore: () => selectedChannelStore,
+                getChannelStore: () => channelStore,
+                getRelationshipStore: () => relationshipStore,
                 storage,
                 cleanup,
             })

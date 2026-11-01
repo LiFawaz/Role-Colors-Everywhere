@@ -4,7 +4,7 @@
   "name": "Role Color Everywhere",
   "author": "Li Fawaz",
   "description": "Colors message mentions, typing indicator names and voice channel users with the highest non-neutral role color.",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "dependencies": {
     "valenced.api": {
       "version": ">=1 <2"
