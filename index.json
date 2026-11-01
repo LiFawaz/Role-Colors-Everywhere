@@ -8,7 +8,7 @@
       "description": "Colors message mentions, typing indicator names and voice channel users with the highest non-neutral role color.",
       "author": "Li Fawaz",
       "channels": {
-        "latest": "1.1.0"
+        "latest": "1.1.1"
       },
       "versions": {
         "1.0.0": {
@@ -145,6 +145,19 @@
           "url": "https://raw.githubusercontent.com/LiFawaz/Role-Colors-Everywhere/gh-pages/pool/com.lifawaz.role-color-everywhere@1.1.0.zip",
           "sha256": "ec1f707158c21af4e15845050eac851e0bf7864ff7ab61d60f634c503027fe33",
           "size": 4334,
+          "dependencies": {
+            "valenced.api": {
+              "version": ">=1 <2"
+            },
+            "discord": {
+              "version": "*"
+            }
+          }
+        },
+        "1.1.1": {
+          "url": "https://raw.githubusercontent.com/LiFawaz/Role-Colors-Everywhere/gh-pages/pool/com.lifawaz.role-color-everywhere@1.1.1.zip",
+          "sha256": "3febcc1983157a1fef3829e0794b3d2501ff9fa76aa34cf765a66239dbb0f922",
+          "size": 4943,
           "dependencies": {
             "valenced.api": {
               "version": ">=1 <2"
