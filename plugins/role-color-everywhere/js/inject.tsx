@@ -62,21 +62,32 @@ function getMemberRecord(memberStore: any, guildId: string, userId: string): any
 }
 
 function getAssignedRoles(member: any, roleStore: any, guildId: string): any[] {
-    const memberRoleIds: string[] = Array.isArray(member?.roles)
-        ? member.roles.map((role: any) => typeof role === 'string' ? role : role?.id).filter(Boolean)
+    const rawRoles = Array.isArray(member?.roles)
+        ? member.roles
         : Array.isArray(member?.roleIds)
-            ? member.roleIds.filter((id: any) => typeof id === 'string')
+            ? member.roleIds
             : []
+    const memberRoleIds = rawRoles
+        .map((role: any) => typeof role === 'string' ? role : role?.id)
+        .filter((id: any): id is string => typeof id === 'string' && id.length > 0)
 
     if (!memberRoleIds.length) return []
 
     const assigned = new Set(memberRoleIds)
     const rolesById = new Map<string, any>()
 
+    // Some Discord builds provide role objects directly on the member.
+    for (const role of rawRoles) {
+        if (role && typeof role === 'object' && role.id && assigned.has(String(role.id))) {
+            rolesById.set(String(role.id), role)
+        }
+    }
+
     for (const roleId of memberRoleIds) {
         try {
             const role = roleStore?.getRole?.(guildId, roleId)
-            if (role) rolesById.set(String(role.id ?? roleId), role)
+            // Never accept a role lookup result unless it is the exact assigned role requested.
+            if (role?.id && String(role.id) === roleId) rolesById.set(roleId, role)
         } catch {
             // Fall back to the sorted role list below.
         }
@@ -91,9 +102,8 @@ function getAssignedRoles(member: any, roleStore: any, guildId: string): any[] {
     }
 
     for (const role of sortedGuildRoles) {
-        if (role?.id && assigned.has(String(role.id)) && !rolesById.has(String(role.id))) {
-            rolesById.set(String(role.id), role)
-        }
+        const id = role?.id == null ? undefined : String(role.id)
+        if (id && assigned.has(id) && !rolesById.has(id)) rolesById.set(id, role)
     }
 
     const ordered = [...rolesById.values()]
@@ -122,20 +132,28 @@ function roleColor(
 ): string | undefined {
     const memberStore = ctx.getMemberStore?.() ?? ctx.memberStore
     const cachedMember = guildId && userId ? getMemberRecord(memberStore, guildId, userId) : undefined
-    const member = cachedMember ?? fallbackMember
-    if (!member) return undefined
+    // Prefer the live member supplied by the voice row. Cached GuildMemberStore records can be stale.
+    const members = [fallbackMember, cachedMember].filter(
+        (member, index, all) => member && all.indexOf(member) === index,
+    )
+    if (!members.length) return undefined
 
-    const roles = guildId ? getAssignedRoles(member, ctx.getRoleStore(), guildId) : []
-    for (const role of roles) {
-        const color = colorFromRole(role)
-        if (!color) continue
-        if (skipNeutralColors && isNeutralColor(color)) continue
-        return color
+    // Discord already resolves this field to the member's displayed role color.
+    // Use it before reconstructing role order, which can vary across client builds.
+    for (const member of members) {
+        const resolved = normalizeHex(member.colorString) ?? normalizeHex(member.user?.colorString)
+        if (resolved && (!skipNeutralColors || !isNeutralColor(resolved))) return resolved
     }
 
-    // Older Discord builds sometimes omit the role IDs from the cached member record.
-    const resolved = normalizeHex(member.colorString) ?? normalizeHex(member.user?.colorString)
-    if (resolved && (!skipNeutralColors || !isNeutralColor(resolved))) return resolved
+    for (const member of members) {
+        const roles = guildId ? getAssignedRoles(member, ctx.getRoleStore(), guildId) : []
+        for (const role of roles) {
+            const color = colorFromRole(role)
+            if (!color) continue
+            if (skipNeutralColors && isNeutralColor(color)) continue
+            return color
+        }
+    }
     return undefined
 }
 
@@ -294,14 +312,13 @@ function findNode(root: any, predicate: (node: any) => boolean, seen = new Set<a
     seen.add(root)
     if (predicate(root)) return root
 
-    const children = root?.props?.children
-    if (Array.isArray(children)) {
-        for (const child of children) {
-            const found = findNode(child, predicate, seen)
-            if (found) return found
-        }
-    } else if (children && typeof children === 'object') {
-        return findNode(children, predicate, seen)
+    // React trees may keep descendants under props or other wrapper objects.
+    for (const key of Object.keys(root)) {
+        if (key === '_owner' || key === '_store' || key === '_source' || key === 'ref') continue
+        const value = root[key]
+        if (!value || typeof value !== 'object') continue
+        const found = findNode(value, predicate, seen)
+        if (found) return found
     }
     return undefined
 }
@@ -333,6 +350,7 @@ function voiceComponentTarget(namespace: any): { parent: any; key: string } | un
 export function installVoiceUserColors(ctx: PatchContext & MemberContext): void {
     let installed = false
     let unsubscribe: (() => void) | undefined
+    let missingColorReported = false
 
     unsubscribe = getModules(
         voiceUserConnectedFilter,
@@ -341,6 +359,7 @@ export function installVoiceUserColors(ctx: PatchContext & MemberContext): void 
             const target = voiceComponentTarget(voiceModule)
             if (!target) return
             installed = true
+            report(`${TAG} found VoiceUserConnected component`)
 
             try {
                 ctx.cleanup(instead(target.parent, target.key, function (args: any[], original: (...args: any[]) => any) {
@@ -371,21 +390,55 @@ export function installVoiceUserColors(ctx: PatchContext & MemberContext): void 
                         settings.skipNeutralColors,
                         fallbackMember,
                     )
-                    if (!color) return result
+                    if (!color) {
+                        if (!missingColorReported) {
+                            missingColorReported = true
+                            report(`${TAG} voice row was found but member role color was unavailable`)
+                        }
+                        return result
+                    }
 
+                    const applyVoiceNameColor = (tree: any): boolean => {
+                        const nameItem = findNode(
+                            tree,
+                            (node) => componentName(node?.type) === 'VoiceUserNameItem',
+                        )
+                        if (!nameItem?.props) return false
+                        nameItem.props = { ...nameItem.props, color }
+                        return true
+                    }
+
+                    // Apply immediately when the name node is already present.
+                    if (applyVoiceNameColor(result)) return result
+
+                    // Otherwise patch the wrapped row component when it renders its descendants.
                     const innerComponent = result.type
-                    if (innerComponent && typeof innerComponent === 'object' && typeof innerComponent.type === 'function') {
+                    const innerKey = innerComponent && typeof innerComponent === 'object'
+                        ? (typeof innerComponent.type === 'function'
+                            ? 'type'
+                            : typeof innerComponent.render === 'function'
+                                ? 'render'
+                                : undefined)
+                        : undefined
+                    if (innerKey) {
                         let unpatchInner: (() => void) | undefined
-                        unpatchInner = after(innerComponent, 'type', (innerResult: any) => {
-                            unpatchInner?.()
-                            try {
-                                const nameItem = findNode(innerResult, (node) => componentName(node?.type) === 'VoiceUserNameItem')
-                                if (nameItem?.props) nameItem.props = { ...nameItem.props, color }
-                            } catch (err) {
-                                report(`${TAG} could not apply voice participant color`, err)
-                            }
-                            return innerResult
-                        })
+                        try {
+                            unpatchInner = after(innerComponent, innerKey, (innerResult: any) => {
+                                unpatchInner?.()
+                                try {
+                                    if (!applyVoiceNameColor(innerResult)) {
+                                        report(`${TAG} VoiceUserNameItem was not found in the rendered voice row`)
+                                    }
+                                } catch (err) {
+                                    report(`${TAG} could not apply voice participant color`, err)
+                                }
+                                return innerResult
+                            })
+                        } catch (err) {
+                            report(`${TAG} failed to hook the rendered voice row`, err)
+                        }
+                    } else {
+                        report(`${TAG} voice row has no patchable inner component`)
                     }
                     return result
                 }))
