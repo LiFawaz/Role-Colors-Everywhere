@@ -524,6 +524,109 @@ function colorTypingTextTree(
         : React.cloneElement(node, { children: newChildren })
 }
 
+const betterTypingWrappers = new WeakMap<object, any>()
+
+function colorDesignTextNodes(node: any, color: string, depth = 0): any {
+    if (depth > 20 || node == null) return node
+    if (Array.isArray(node)) {
+        let changed = false
+        const next = node.map(child => {
+            const patched = colorDesignTextNodes(child, color, depth + 1)
+            if (patched !== child) changed = true
+            return patched
+        })
+        return changed ? next : node
+    }
+    if (!React?.isValidElement?.(node)) return node
+
+    const oldChildren = node.props?.children
+    const newChildren = colorDesignTextNodes(oldChildren, color, depth + 1)
+    const isText = node.type === Design?.Text
+    if (!isText && newChildren === oldChildren) return node
+
+    return React.cloneElement(node, {
+        ...(isText ? { style: [node.props?.style, { color }] } : {}),
+        ...(newChildren !== oldChildren ? { children: newChildren } : {}),
+    })
+}
+
+/**
+ * Better Typing Indicators replaces Discord's native Text with its own
+ * TypingText -> TypingUser component tree. Wrap those components at render time
+ * so the actual username Text gets the role color after BTI has transformed it.
+ */
+function wrapBetterTypingTree(node: any, context: TypingColorContext, depth = 0): any {
+    if (depth > 20 || node == null) return node
+    if (Array.isArray(node)) {
+        let changed = false
+        const next = node.map(child => {
+            const patched = wrapBetterTypingTree(child, context, depth + 1)
+            if (patched !== child) changed = true
+            return patched
+        })
+        return changed ? next : node
+    }
+    if (!React?.isValidElement?.(node) || typeof node.type !== 'function') {
+        if (React?.isValidElement?.(node)) {
+            const oldChildren = node.props?.children
+            const newChildren = wrapBetterTypingTree(oldChildren, context, depth + 1)
+            return newChildren === oldChildren ? node : React.cloneElement(node, { children: newChildren })
+        }
+        return node
+    }
+
+    const props = node.props ?? {}
+    const isBetterTypingText =
+        React?.isValidElement?.(props.text) &&
+        Array.isArray(props.typingUserIds) &&
+        props.channel
+
+    const isBetterTypingUser =
+        props.user?.id != null &&
+        props.channel &&
+        typeof props.renderName === 'function' &&
+        props.settings
+
+    if (isBetterTypingText || isBetterTypingUser) {
+        const Original = node.type
+        let Wrapped = betterTypingWrappers.get(Original)
+        if (!Wrapped) {
+            if (isBetterTypingText) {
+                Wrapped = function RoleColorTypingTextWrapper(originalProps: any) {
+                    return wrapBetterTypingTree(
+                        Original(originalProps),
+                        context,
+                        0,
+                    )
+                }
+            } else {
+                Wrapped = function RoleColorTypingUserWrapper(originalProps: any) {
+                    const result = Original(originalProps)
+                    const channel = originalProps?.channel
+                    const userId = originalProps?.user?.id
+                    const guildId = channel?.guild_id ?? channel?.guildId
+                    const settings = readSettings(context.storage)
+                    if (!guildId || !userId || !settings.typingIndicatorNames) return result
+
+                    const color = roleColor(
+                        context,
+                        String(guildId),
+                        String(userId),
+                        settings.skipNeutralColors,
+                    )
+                    return color ? colorDesignTextNodes(result, color) : result
+                }
+            }
+            betterTypingWrappers.set(Original, Wrapped)
+        }
+        return React.createElement(Wrapped, { ...props, key: node.key ?? undefined })
+    }
+
+    const oldChildren = props.children
+    const newChildren = wrapBetterTypingTree(oldChildren, context, depth + 1)
+    return newChildren === oldChildren ? node : React.cloneElement(node, { children: newChildren })
+}
+
 function TypingNameRenderer({
     original,
     originalProps,
@@ -538,8 +641,11 @@ function TypingNameRenderer({
     const rawIds = originalProps?.typingUserIds
     if (!guildId || !Array.isArray(rawIds) || rawIds.length === 0) return result
 
+    // First handle Better Typing Indicators' transformed TypingText/TypingUser
+    // components, then fall back to Discord's original Design.Text tree.
+    const wrapped = wrapBetterTypingTree(result, context)
     return colorTypingTextTree(
-        result,
+        wrapped,
         context,
         String(guildId),
         rawIds.map((id: any) => String(id)),
