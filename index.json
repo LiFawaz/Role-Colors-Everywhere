@@ -1,14 +1,14 @@
 {
   "format": 1,
   "name": "LiFawaz Role Colors",
-  "description": "Valenced plugin repository for coloring names, mentions and voice users with Discord role colors.",
+  "description": "Valenced plugin repository for coloring message mentions, typing indicator names and voice channel users with Discord role colors.",
   "plugins": {
     "com.lifawaz.role-color-everywhere": {
       "name": "Role Color Everywhere",
-      "description": "Colors message mentions and voice channel users with the highest non-neutral role color, with an option to include white, black and gray roles.",
+      "description": "Colors message mentions, typing indicator names and voice channel users with the highest non-neutral role color.",
       "author": "Li Fawaz",
       "channels": {
-        "latest": "1.0.9"
+        "latest": "1.1.0"
       },
       "versions": {
         "1.0.0": {
@@ -132,6 +132,19 @@
           "url": "https://raw.githubusercontent.com/LiFawaz/Role-Colors-Everywhere/gh-pages/pool/com.lifawaz.role-color-everywhere@1.0.9.zip",
           "sha256": "0018ac4dcc5e254b1d031684b00383a48dd6183b2c185e68904fedbf4bcc5ba8",
           "size": 3717,
+          "dependencies": {
+            "valenced.api": {
+              "version": ">=1 <2"
+            },
+            "discord": {
+              "version": "*"
+            }
+          }
+        },
+        "1.1.0": {
+          "url": "https://raw.githubusercontent.com/LiFawaz/Role-Colors-Everywhere/gh-pages/pool/com.lifawaz.role-color-everywhere@1.1.0.zip",
+          "sha256": "ec1f707158c21af4e15845050eac851e0bf7864ff7ab61d60f634c503027fe33",
+          "size": 4334,
           "dependencies": {
             "valenced.api": {
               "version": ">=1 <2"
