@@ -1,7 +1,8 @@
 import { after, before, instead } from '@valenced/patcher'
 import { getModules, lookupModules } from '@valenced/modules/finders'
 import { getModuleWithImportedPath } from '@valenced/discord/utils/modules/finders'
-import { createFilterGenerator, FilterScopes } from '@valenced/modules/finders/filters'
+import { createFilterGenerator, FilterScopes, withProps } from '@valenced/modules/finders/filters'
+import { Design } from '@valenced/discord/design'
 import { React, ReactNative } from '@valenced/react'
 import { readSettings } from './settings-store'
 import { report, TAG } from './lookup'
@@ -441,290 +442,166 @@ export function installVoiceUserColors(ctx: PatchContext & MemberContext): void 
 }
 
 
-const TYPING_INDICATOR_PATH = 'modules/chat/native/TypingIndicator.tsx'
-const NICKNAME_UTILS_PATH = 'utils/NicknameUtils.tsx'
-
-interface TypingColorContext extends PatchContext, MemberContext {
-    getUserStore: () => any
-    getTypingStore: () => any
-    getSelectedChannelStore: () => any
-    getChannelStore: () => any
-    getRelationshipStore: () => any
-}
+interface TypingColorContext extends PatchContext, MemberContext {}
 
 interface TypingNameRendererProps {
     original: (properties: any) => any
+    originalProps: any
     context: TypingColorContext
-    getNicknameUtils: () => any
-    [key: string]: any
 }
 
-interface ColoredTypingChunk {
-    text: string
-    color?: string
-}
-
-function isNameCharacter(value: string | undefined): boolean {
-    return Boolean(value && /[A-Za-z0-9_À-ɏ̀-ͯ؀-ۿً-ٟ]/.test(value))
-}
-
-/** Split the localized typing line while preserving every separator and word. */
-function splitTypingLine(
-    text: string,
-    nameColors: Map<string, string>,
-): ColoredTypingChunk[] | undefined {
-    const names = [...nameColors.keys()].sort((a, b) => b.length - a.length)
-    if (!names.length) return undefined
-
-    const chunks: ColoredTypingChunk[] = []
-    let scanFrom = 0
-    let outputFrom = 0
-
-    while (scanFrom < text.length) {
-        let matchedName: string | undefined
-        for (const name of names) {
-            if (!text.startsWith(name, scanFrom)) continue
-
-            const before = scanFrom > 0 ? text[scanFrom - 1] : undefined
-            const after = text[scanFrom + name.length]
-            if (isNameCharacter(before) || isNameCharacter(after)) continue
-
-            matchedName = name
-            break
-        }
-
-        if (!matchedName) {
-            scanFrom++
-            continue
-        }
-
-        if (scanFrom > outputFrom) {
-            chunks.push({ text: text.slice(outputFrom, scanFrom) })
-        }
-        chunks.push({
-            text: matchedName,
-            color: nameColors.get(matchedName),
-        })
-        scanFrom += matchedName.length
-        outputFrom = scanFrom
-    }
-
-    if (outputFrom === 0) return undefined
-    if (outputFrom < text.length) chunks.push({ text: text.slice(outputFrom) })
-    return chunks
-}
-
-/** Apply role colors to the actual Text nodes used by TypingIndicator. */
-function paintTypingTextTree(
+/**
+ * Discord's native typing line is not one plain string. The username is a
+ * separate Design.Text child, while separators and "is typing..." are sibling
+ * text children. Color only those username elements, in Discord's own user order.
+ */
+function colorTypingTextTree(
     node: any,
-    nameColors: Map<string, string>,
-    textComponent: any,
+    context: TypingColorContext,
+    guildId: string,
+    typingUserIds: string[],
+    settings: ReturnType<typeof readSettings>,
     depth = 0,
 ): any {
-    if (depth > 12 || node == null) return node
+    if (depth > 16 || node == null) return node
+
     if (Array.isArray(node)) {
-        const next = node.map(child =>
-            paintTypingTextTree(child, nameColors, textComponent, depth + 1),
-        )
-        return next.some((child, index) => child !== node[index]) ? next : node
+        let changed = false
+        const next = node.map((child) => {
+            const patched = colorTypingTextTree(
+                child, context, guildId, typingUserIds, settings, depth + 1,
+            )
+            if (patched !== child) changed = true
+            return patched
+        })
+        return changed ? next : node
     }
+
     if (typeof React?.isValidElement !== 'function' || !React.isValidElement(node)) {
         return node
     }
 
-    const children = node.props?.children
-    if (typeof children === 'string') {
-        const chunks = splitTypingLine(children, nameColors)
-        if (!chunks) return node
+    // Discord renders each active username as an element child of this Text.
+    // Plain string children (commas, spaces, and "is typing...") are not changed.
+    if (node.type === Design?.Text && Array.isArray(node.props?.children)) {
+        let userIndex = 0
+        let changed = false
+        const children = node.props.children.map((child: any) => {
+            if (!React.isValidElement(child)) return child
 
-        const coloredChildren = chunks.map((chunk, index) =>
-            chunk.color
-                ? React.createElement(
-                    textComponent,
-                    {
-                        key: 'role-typing-' + index,
-                        style: { color: chunk.color },
-                    },
-                    chunk.text,
-                )
-                : chunk.text,
-        )
-        return React.cloneElement(node, { children: coloredChildren })
-    }
+            const userId = typingUserIds[userIndex++]
+            if (!userId) return child
 
-    const nextChildren = paintTypingTextTree(
-        children,
-        nameColors,
-        textComponent,
-        depth + 1,
-    )
-    return nextChildren === children
-        ? node
-        : React.cloneElement(node, { children: nextChildren })
-}
-
-function getTypingNameColors(
-    context: TypingColorContext,
-    nicknameUtils: any,
-): Map<string, string> {
-    const nameColors = new Map<string, string>()
-    const settings = readSettings(context.storage)
-    if (!settings.typingIndicatorNames) return nameColors
-
-    try {
-        const selectedStore = context.getSelectedChannelStore()
-        const channelId =
-            selectedStore?.getCurrentlySelectedChannelId?.() ??
-            selectedStore?.getChannelId?.() ??
-            selectedStore?.getLastSelectedChannelId?.()
-        if (!channelId) return nameColors
-
-        const channel = context.getChannelStore()?.getChannel?.(String(channelId))
-        const guildId =
-            channel?.guild_id ??
-            channel?.guildId ??
-            channel?.getGuildId?.()
-        if (!guildId) return nameColors
-
-        const typingUsers = context.getTypingStore()?.getTypingUsers?.(String(channelId)) ?? {}
-        const userStore = context.getUserStore()
-        const memberStore = context.getMemberStore?.() ?? context.memberStore
-        const relationshipStore = context.getRelationshipStore()
-        const ambiguousNames = new Set<string>()
-        const nameOwners = new Map<string, string>()
-
-        const addName = (value: unknown, userId: string, color: string) => {
-            if (typeof value !== 'string') return
-            const name = value.trim()
-            if (!name || ambiguousNames.has(name)) return
-
-            const owner = nameOwners.get(name)
-            if (owner && owner !== userId) {
-                nameColors.delete(name)
-                nameOwners.delete(name)
-                ambiguousNames.add(name)
-                return
-            }
-            if (!owner) {
-                nameOwners.set(name, userId)
-                nameColors.set(name, color)
-            }
-        }
-
-        // The mobile indicator displays at most a small set of active typists.
-        for (const userId of Object.keys(typingUsers).slice(0, 8)) {
-            const user = userStore?.getUser?.(userId)
-            if (!user) continue
-
-            const member = getMemberRecord(memberStore, String(guildId), userId)
+            const member = getMemberRecord(
+                context.getMemberStore?.() ?? context.memberStore,
+                guildId,
+                String(userId),
+            )
             const color = roleColor(
                 context,
-                String(guildId),
-                userId,
+                guildId,
+                String(userId),
                 settings.skipNeutralColors,
                 member,
             )
-            if (!color) continue
+            if (!color) return child
 
-            let resolvedName: unknown
-            try {
-                resolvedName = nicknameUtils?.getName?.(
-                    String(guildId),
-                    String(channelId),
-                    user,
-                )
-            } catch {
-                resolvedName = undefined
-            }
+            changed = true
+            return React.cloneElement(child, {
+                style: [child.props?.style, { color }],
+            })
+        })
 
-            // Include Discord's resolved nickname and common fallbacks. Duplicate
-            // display names are omitted rather than coloring the wrong account.
-            addName(resolvedName, userId, color)
-            addName(memberStore?.getNick?.(String(guildId), userId), userId, color)
-            addName(member?.nick ?? member?.nickname, userId, color)
-            addName(relationshipStore?.getNickname?.(userId), userId, color)
-            addName(user.globalName ?? user.global_name, userId, color)
-            addName(user.username, userId, color)
-        }
-    } catch (err) {
-        report(TAG + ' could not resolve users in the typing indicator', err)
+        if (changed) return React.cloneElement(node, { children })
     }
 
-    return nameColors
+    const oldChildren = node.props?.children
+    const newChildren = colorTypingTextTree(
+        oldChildren, context, guildId, typingUserIds, settings, depth + 1,
+    )
+    return newChildren === oldChildren
+        ? node
+        : React.cloneElement(node, { children: newChildren })
 }
 
 function TypingNameRenderer({
     original,
+    originalProps,
     context,
-    getNicknameUtils,
-    ...properties
 }: TypingNameRendererProps) {
-    // Keep Discord's original component props (especially channel and typingUserIds)
-    // on this wrapper so other typing-indicator plugins can safely inspect them.
-    const result = original(properties)
-    const nameColors = getTypingNameColors(context, getNicknameUtils())
-    const TextComponent = (ReactNative as any)?.Text
-    if (!TextComponent || nameColors.size === 0) return result
+    const result = original(originalProps)
+    const settings = readSettings(context.storage)
+    if (!settings.typingIndicatorNames) return result
 
-    return paintTypingTextTree(result, nameColors, TextComponent)
+    const channel = originalProps?.channel
+    const guildId = channel?.guild_id ?? channel?.guildId ?? channel?.getGuildId?.()
+    const rawIds = originalProps?.typingUserIds
+    if (!guildId || !Array.isArray(rawIds) || rawIds.length === 0) return result
+
+    return colorTypingTextTree(
+        result,
+        context,
+        String(guildId),
+        rawIds.map((id: any) => String(id)),
+        settings,
+    )
 }
 
 /**
- * Patch Discord's native TypingIndicator renderItem. This is the component that
- * builds the visible typing line; useTypingText alone only supplies its text.
+ * Use the same native TypingIndicator module signature used by Better Typing
+ * Indicators. Its renderItem supplies the exact channel and typingUserIds for
+ * this row, so no selected-channel guessing or display-name text matching is
+ * needed. Wrapping the returned inner component preserves all of its props.
  */
 export function installTypingUserColors(context: TypingColorContext): void {
-    let nicknameUtils: any
+    const filter = withProps<{
+        default: { type?: (...args: any[]) => any }
+        useTypingUserIdsForDisplay: unknown
+    }>('useTypingUserIdsForDisplay')
 
-    const stopNicknames = getModuleWithImportedPath<any>(
-        NICKNAME_UTILS_PATH,
-        (module: any) => {
-            nicknameUtils = module?.default ?? module
-            report(TAG + ' connected mobile nickname resolver')
-        },
-    )
-
-    const stopTypingIndicator = getModuleWithImportedPath<any>(
-        TYPING_INDICATOR_PATH,
+    const installed = new WeakSet<object>()
+    const unsubscribe = getModules(
+        filter,
         (typingModule: any) => {
-            const holder = typingModule?.default as
-                | { type?: (...args: any[]) => any }
-                | undefined
-            if (typeof holder?.type !== 'function') {
-                report(TAG + ' found TypingIndicator module, but its default type was not patchable')
-                return
-            }
+            const component = typingModule?.default
+            if (
+                !component ||
+                typeof component.type !== 'function' ||
+                installed.has(component)
+            ) return
 
+            installed.add(component)
             try {
-                const target = holder as { type: (...args: any[]) => any }
-                const unpatch = after(target, 'type', (result: any) => {
-                    const originalRenderItem = result?.props?.renderItem
-                    if (typeof originalRenderItem !== 'function') return result
+                const unpatch = after(component, 'type', (tree: any) => {
+                    const renderItem = tree?.props?.renderItem
+                    if (typeof renderItem !== 'function') return tree
 
-                    return React.cloneElement(result, {
+                    return React.cloneElement(tree, {
                         renderItem: (...args: any[]) => {
-                            const item = originalRenderItem(...args)
-                            if (typeof item?.type !== 'function') return item
+                            const item = renderItem(...args)
+                            if (
+                                !React?.isValidElement?.(item) ||
+                                typeof item.type !== 'function'
+                            ) return item
 
                             return React.createElement(TypingNameRenderer, {
-                                ...item.props,
                                 key: item.key ?? undefined,
                                 original: item.type,
+                                originalProps: item.props ?? {},
                                 context,
-                                getNicknameUtils: () => nicknameUtils,
                             })
                         },
                     })
                 })
 
                 context.cleanup(unpatch)
-                report(TAG + ' patched native TypingIndicator renderItem')
+                report(TAG + ' patched native TypingIndicator username elements')
             } catch (err) {
                 report(TAG + ' failed to patch native TypingIndicator', err)
             }
         },
+        { max: 1 },
     )
 
-    context.cleanup(stopNicknames)
-    context.cleanup(stopTypingIndicator)
+    context.cleanup(unsubscribe)
 }
