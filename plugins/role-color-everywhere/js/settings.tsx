@@ -18,16 +18,23 @@ export function SettingsComponent({ api }: { api: any }) {
         return null
     }
 
+    const update = (patch: Partial<RoleColorSettings>) => storage.set({ ...settings, ...patch })
+
     return <TableRowGroup>
         <TableSwitchRow
             label="Color User Mentions"
             value={settings.userMentions}
-            onValueChange={(value: boolean) => storage.set({ ...settings, userMentions: value })}
+            onValueChange={(value: boolean) => update({ userMentions: value })}
         />
         <TableSwitchRow
             label="Color Voice Channel Users"
             value={settings.voiceUsers}
-            onValueChange={(value: boolean) => storage.set({ ...settings, voiceUsers: value })}
+            onValueChange={(value: boolean) => update({ voiceUsers: value })}
+        />
+        <TableSwitchRow
+            label="Skip White, Black & Gray Roles"
+            value={settings.skipNeutralColors}
+            onValueChange={(value: boolean) => update({ skipNeutralColors: value })}
         />
     </TableRowGroup>
 }
