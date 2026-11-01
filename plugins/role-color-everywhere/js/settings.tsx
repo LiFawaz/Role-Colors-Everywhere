@@ -6,22 +6,28 @@ export type { RoleColorSettings }
 export function SettingsComponent({ api }: { api: any }) {
     const storage = api?.jsonStorage
     if (!storage || typeof storage.use !== 'function' || typeof storage.set !== 'function') {
-        report(`${TAG} configure screen not shown: no jsonStorage in settings api`)
+        report(`${TAG} configure screen unavailable: plugin jsonStorage missing`)
         return null
     }
+
     const settings = normalizeSettings(storage.use())
     const TableRowGroup = Design?.TableRowGroup
     const TableSwitchRow = Design?.TableSwitchRow
     if (!TableRowGroup || !TableSwitchRow) {
-        report(`${TAG} configure screen not shown: design switch components missing`)
+        report(`${TAG} configure screen unavailable: design switch components missing`)
         return null
     }
+
     return <TableRowGroup>
-        <TableSwitchRow label="Color Typing Indicators" value={settings.typingUser}
-            onValueChange={(value: boolean) => storage.set({ ...settings, typingUser: value })} />
-        <TableSwitchRow label="Color User Mentions" value={settings.userMentions}
-            onValueChange={(value: boolean) => storage.set({ ...settings, userMentions: value })} />
-        <TableSwitchRow label="Color Voice Channel Users" value={settings.voiceUsers}
-            onValueChange={(value: boolean) => storage.set({ ...settings, voiceUsers: value })} />
+        <TableSwitchRow
+            label="Color User Mentions"
+            value={settings.userMentions}
+            onValueChange={(value: boolean) => storage.set({ ...settings, userMentions: value })}
+        />
+        <TableSwitchRow
+            label="Color Voice Channel Users"
+            value={settings.voiceUsers}
+            onValueChange={(value: boolean) => storage.set({ ...settings, voiceUsers: value })}
+        />
     </TableRowGroup>
 }
