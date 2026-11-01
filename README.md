@@ -25,15 +25,3 @@ Then find **Role Color Everywhere** in the plugin list and install it.
 Open the plugin's settings to turn message mentions or voice channel names on or off.
 
 You can also toggle **Skip White, Black & Gray Roles**. Turn it off if you want neutral role colors to show too.
-
-## Build
-
-To build it locally:
-
-```sh
-bun install
-bun --bun run build --plugins-dir plugins role-color-everywhere
-python3 scripts/package_plugin.py role-color-everywhere
-```
-
-The GitHub Actions workflow builds the plugin and publishes versioned packages to the `gh-pages` branch.
