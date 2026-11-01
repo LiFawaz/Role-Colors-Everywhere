@@ -1,6 +1,6 @@
 import { after, before, instead } from '@valenced/patcher'
 import { getModules, lookupModules } from '@valenced/modules/finders'
-import { createFilterGenerator, FilterScopes, withName } from '@valenced/modules/finders/filters'
+import { createFilterGenerator, FilterScopes } from '@valenced/modules/finders/filters'
 import { ReactNative } from '@valenced/react'
 import { readSettings } from './settings-store'
 import { report, TAG } from './lookup'
@@ -297,21 +297,47 @@ function findNode(root: any, predicate: (node: any) => boolean, seen = new Set<a
     return undefined
 }
 
+function isVoiceUserConnectedExport(candidate: any): boolean {
+    return candidate?.name === 'VoiceUserConnected'
+        || candidate?.displayName === 'VoiceUserConnected'
+        || candidate?.type?.name === 'VoiceUserConnected'
+        || candidate?.type?.displayName === 'VoiceUserConnected'
+        || candidate?.render?.name === 'VoiceUserConnected'
+        || candidate?.render?.displayName === 'VoiceUserConnected'
+}
+
+const voiceUserConnectedFilter = createFilterGenerator(
+    (_args: [], _id: number, exports: any) =>
+        isVoiceUserConnectedExport(exports) || isVoiceUserConnectedExport(exports?.default),
+    () => 'role-color-everywhere.VoiceUserConnected',
+    FilterScopes.Initialized,
+)()
+
+function voiceComponentTarget(namespace: any): { parent: any; key: string } | undefined {
+    const component = namespace?.default
+    if (typeof component === 'function') return { parent: namespace, key: 'default' }
+    if (component && typeof component.type === 'function') return { parent: component, key: 'type' }
+    if (component && typeof component.render === 'function') return { parent: component, key: 'render' }
+    return undefined
+}
+
 export function installVoiceUserColors(ctx: PatchContext & MemberContext): void {
     let installed = false
     let unsubscribe: (() => void) | undefined
+
     unsubscribe = getModules(
-        withName('VoiceUserConnected'),
+        voiceUserConnectedFilter,
         (voiceModule: any) => {
             if (installed) return
-            const component = voiceModule?.default
-            if (typeof component !== 'function') return
+            const target = voiceComponentTarget(voiceModule)
+            if (!target) return
             installed = true
 
             try {
-                ctx.cleanup(instead(voiceModule, 'default', function (args: any[], original: (...args: any[]) => any) {
+                ctx.cleanup(instead(target.parent, target.key, function (args: any[], original: (...args: any[]) => any) {
                     const result = original.apply(this, args)
-                    if (!readSettings(ctx.storage).voiceUsers || !result?.type) return result
+                    const settings = readSettings(ctx.storage)
+                    if (!settings.voiceUsers || !result?.type) return result
 
                     const props = args?.[0] ?? {}
                     const member = props?.member ?? props?.voiceState?.member ?? props?.user?.member
@@ -329,7 +355,6 @@ export function installVoiceUserColors(ctx: PatchContext & MemberContext): void 
                         ?? member?.user?.id
                         ?? member?.id
                         ?? props?.user?.id
-                    const settings = readSettings(ctx.storage)
                     const color = roleColor(
                         ctx,
                         guildId == null ? undefined : String(guildId),
@@ -344,13 +369,12 @@ export function installVoiceUserColors(ctx: PatchContext & MemberContext): void 
                         let unpatchInner: (() => void) | undefined
                         unpatchInner = after(innerComponent, 'type', (innerResult: any) => {
                             unpatchInner?.()
-                            const nameItem = findNode(innerResult, (node) => {
-                                const type = node?.type
-                                return type?.name === 'VoiceUserNameItem'
-                                    || type?.displayName === 'VoiceUserNameItem'
-                                    || type?.render?.name === 'VoiceUserNameItem'
-                            })
-                            if (nameItem?.props) nameItem.props = { ...nameItem.props, color }
+                            try {
+                                const nameItem = findNode(innerResult, (node) => componentName(node?.type) === 'VoiceUserNameItem')
+                                if (nameItem?.props) nameItem.props = { ...nameItem.props, color }
+                            } catch (err) {
+                                report(`${TAG} could not apply voice participant color`, err)
+                            }
                             return innerResult
                         })
                     }
@@ -359,10 +383,12 @@ export function installVoiceUserColors(ctx: PatchContext & MemberContext): void 
                 report(`${TAG} voice participant color patch installed`)
                 unsubscribe?.()
             } catch (err) {
+                installed = false
                 report(`${TAG} failed to patch VoiceUserConnected`, err)
             }
         },
         { max: 1, returnNamespace: true },
     )
-    ctx.cleanup(unsubscribe)
+
+    ctx.cleanup(() => unsubscribe?.())
 }
