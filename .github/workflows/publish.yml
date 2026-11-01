@@ -66,15 +66,19 @@ jobs:
         run: |
           python3 - <<'PY'
           import hashlib, json, os, urllib.request
-          url = f"https://raw.githubusercontent.com/{os.environ['GITHUB_REPOSITORY']}/gh-pages/index.json"
+          cache_buster = os.environ["GITHUB_SHA"]
+          url = f"https://raw.githubusercontent.com/{os.environ['GITHUB_REPOSITORY']}/gh-pages/index.json?verify={cache_buster}"
           with urllib.request.urlopen(url, timeout=30) as response:
               data = json.load(response)
           plugin = data["plugins"]["com.lifawaz.role-color-everywhere"]
           version = plugin["channels"]["latest"]
           artifact = plugin["versions"][version]
-          with urllib.request.urlopen(artifact["url"], timeout=30) as response:
+          artifact_url = f"{artifact['url']}?verify={cache_buster}"
+          with urllib.request.urlopen(artifact_url, timeout=30) as response:
               payload = response.read()
-          assert hashlib.sha256(payload).hexdigest() == artifact["sha256"]
-          assert len(payload) == artifact["size"]
+          actual_sha256 = hashlib.sha256(payload).hexdigest()
+          actual_size = len(payload)
+          assert actual_sha256 == artifact["sha256"], f"ZIP SHA-256 mismatch: {actual_sha256} != {artifact['sha256']}"
+          assert actual_size == artifact["size"], f"ZIP size mismatch: {actual_size} != {artifact['size']}"
           print("Published index and ZIP verified:", version, url)
           PY
