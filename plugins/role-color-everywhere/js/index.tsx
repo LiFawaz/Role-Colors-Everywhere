@@ -11,7 +11,7 @@ export default plugin({
 
     start(api: any) {
         const log = api?.unscoped?.discord?.common?.logger
-        setLogger(log ?? { warn: (message: string) => console.warn(message) })
+        setLogger(log ?? { warn: (message: string) => console.warn(message), info: (message: string) => console.log(message) })
         log?.info?.(`${TAG} started`)
 
         const cleanup: (fn: () => void) => void =
@@ -24,15 +24,20 @@ export default plugin({
 
         let memberStore: any
         let channelStore: any
+        let roleStore: any
+        let mentionPatchInstalled = false
 
         const installMentionsWhenReady = () => {
-            if (!memberStore || !channelStore) return
+            if (mentionPatchInstalled || !memberStore || !channelStore) return
+            mentionPatchInstalled = true
             installMessageMentionColors({
                 memberStore,
                 channelStore,
+                getRoleStore: () => roleStore,
                 storage,
                 cleanup,
             })
+            log?.info?.(`${TAG} message color patch setup completed`)
         }
 
         try {
@@ -46,7 +51,11 @@ export default plugin({
                 log?.info?.(`${TAG} ChannelStore connected`)
                 installMentionsWhenReady()
             }))
-            installVoiceUserColors({ getMemberStore: () => memberStore, storage, cleanup })
+            cleanup(getStore('GuildRoleStore', (store: any) => {
+                roleStore = store
+                log?.info?.(`${TAG} GuildRoleStore connected`)
+            }))
+            installVoiceUserColors({ getMemberStore: () => memberStore, getRoleStore: () => roleStore, storage, cleanup })
         } catch (err) {
             report(`${TAG} patch setup failed`, err)
         }
