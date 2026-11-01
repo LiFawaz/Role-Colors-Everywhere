@@ -104,6 +104,7 @@ export function installMessageMentionColors(ctx: PatchContext & { memberStore: a
                     catch (err) { report(`${TAG} skipped one message row`, err) }
                 }
                 args[1] = JSON.stringify(rows)
+                return args
             } catch (err) {
                 report(`${TAG} could not transform Android message rows`, err)
             }
