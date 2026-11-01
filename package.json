@@ -5,6 +5,7 @@
   "description": "Role Color Everywhere for Valenced. Ported from asportnoy's Replugged plugin (MIT).",
   "scripts": {
     "build": "valenced-plugin build",
+    "generate-index": "valenced-plugin generate-index",
     "package:role-colors": "python3 scripts/package_plugin.py role-color-everywhere"
   },
   "dependencies": {
@@ -30,5 +31,9 @@
     "react-native-gesture-handler": "npm:dry-uninstall",
     "react-native-screens": "npm:dry-uninstall"
   },
-  "trustedDependencies": ["@valenced/plugin-cli", "@swc/core"]
+  "trustedDependencies": [
+    "@valenced/plugin-cli",
+    "@swc/core"
+  ],
+  "author": "Li Fawaz"
 }
