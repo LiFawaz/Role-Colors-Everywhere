@@ -454,8 +454,9 @@ interface TypingColorContext extends PatchContext, MemberContext {
 
 interface TypingNameRendererProps {
     original: (properties: any) => any
-    properties: any
     context: TypingColorContext
+    getNicknameUtils: () => any
+    [key: string]: any
 }
 
 interface ColoredTypingChunk {
@@ -654,10 +655,12 @@ function getTypingNameColors(
 
 function TypingNameRenderer({
     original,
-    properties,
     context,
     getNicknameUtils,
-}: TypingNameRendererProps & { getNicknameUtils: () => any }) {
+    ...properties
+}: TypingNameRendererProps) {
+    // Keep Discord's original component props (especially channel and typingUserIds)
+    // on this wrapper so other typing-indicator plugins can safely inspect them.
     const result = original(properties)
     const nameColors = getTypingNameColors(context, getNicknameUtils())
     const TextComponent = (ReactNative as any)?.Text
@@ -704,9 +707,9 @@ export function installTypingUserColors(context: TypingColorContext): void {
                             if (typeof item?.type !== 'function') return item
 
                             return React.createElement(TypingNameRenderer, {
+                                ...item.props,
                                 key: item.key ?? undefined,
                                 original: item.type,
-                                properties: item.props,
                                 context,
                                 getNicknameUtils: () => nicknameUtils,
                             })
