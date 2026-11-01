@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "id": "com.lifawaz.role-color-everywhere",
+  "name": "Role Color Everywhere",
+  "author": "Li Fawaz",
+  "contributors": ["asportnoy <489484338514100234>"],
+  "description": "Colors names, mentions and voice users with their role color. Ported to Valenced from asportnoy's Replugged plugin (MIT).",
+  "version": "1.0.0",
+  "dependencies": {
+    "valenced.api": { "version": ">=1 <2" },
+    "discord": { "version": "*" }
+  },
+  "dist": { "script": "index.js" }
+}
