@@ -1,0 +1,30 @@
+{
+  "format": 1,
+  "name": "LiFawaz Role Colors",
+  "description": "Valenced plugin repository for coloring names, mentions and voice users with Discord role colors.",
+  "plugins": {
+    "com.lifawaz.role-color-everywhere": {
+      "name": "Role Color Everywhere",
+      "description": "Colors names, mentions and voice users with their role color.",
+      "author": "Li Fawaz",
+      "channels": {
+        "latest": "1.0.0"
+      },
+      "versions": {
+        "1.0.0": {
+          "url": "https://raw.githubusercontent.com/LiFawaz/Role-Colors-Everywhere/gh-pages/pool/com.lifawaz.role-color-everywhere@1.0.0.zip",
+          "sha256": "81f64016c1f3d34af8598077d972631eb55c2b132de0518996fb2e5d0fc75502",
+          "size": 2688,
+          "dependencies": {
+            "valenced.api": {
+              "version": ">=1 <2"
+            },
+            "discord": {
+              "version": "*"
+            }
+          }
+        }
+      }
+    }
+  }
+}
