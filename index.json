@@ -65,8 +65,8 @@
         },
         "1.0.4": {
           "url": "https://raw.githubusercontent.com/LiFawaz/Role-Colors-Everywhere/gh-pages/pool/com.lifawaz.role-color-everywhere@1.0.4.zip",
-          "sha256": "3747d24fff4988a5e3c30560327712ec71d8e1dc6d37743fee08ce48c81ab0c9",
-          "size": 3663,
+          "sha256": "b7bfed17c9eee74fc4b8740cb6093527a1475263f78758cbb54d1db4945ce6ff",
+          "size": 3683,
           "dependencies": {
             "valenced.api": {
               "version": ">=1 <2"
