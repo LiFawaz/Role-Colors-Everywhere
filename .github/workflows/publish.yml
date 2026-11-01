@@ -64,8 +64,8 @@ jobs:
       - name: Verify published repository
         run: |
           python3 - <<'PY'
-          import json, urllib.request
-          url = "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/gh-pages/index.json"
+          import json, os, urllib.request
+          url = f"https://raw.githubusercontent.com/{os.environ['GITHUB_REPOSITORY']}/gh-pages/index.json"
           with urllib.request.urlopen(url, timeout=30) as response:
               data = json.load(response)
           plugin = data["plugins"]["com.lifawaz.role-color-everywhere"]
