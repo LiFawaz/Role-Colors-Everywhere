@@ -280,6 +280,15 @@ export function installMessageMentionColors(ctx: PatchContext & MemberContext & 
     ctx.cleanup(unsubscribe)
 }
 
+function componentName(type: any): string | undefined {
+    return type?.displayName
+        ?? type?.name
+        ?? type?.render?.displayName
+        ?? type?.render?.name
+        ?? type?.type?.displayName
+        ?? type?.type?.name
+}
+
 function findNode(root: any, predicate: (node: any) => boolean, seen = new Set<any>()): any {
     if (!root || typeof root !== 'object' || seen.has(root)) return undefined
     seen.add(root)
