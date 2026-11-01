@@ -524,14 +524,70 @@ function colorTypingTextTree(
         : React.cloneElement(node, { children: newChildren })
 }
 
-const betterTypingWrappers = new WeakMap<object, any>()
+interface BetterTypingRenderContext {
+    channel: any
+    typingUserIds: string[]
+}
 
-function colorDesignTextNodes(node: any, color: string, depth = 0): any {
+interface CustomTypingTextContext extends BetterTypingRenderContext {
+    username: string
+}
+
+const betterTypingWrappers = new WeakMap<object, Map<string, any>>()
+
+function findCustomTypingUserId(
+    context: TypingColorContext,
+    typing: CustomTypingTextContext,
+): string | undefined {
+    const guildId = typing.channel?.guild_id ?? typing.channel?.guildId
+    if (!guildId || !typing.username) return undefined
+
+    const expected = typing.username.trim().toLocaleLowerCase()
+    for (const rawId of typing.typingUserIds) {
+        const userId = String(rawId)
+        const member = getMemberRecord(
+            context.getMemberStore?.() ?? context.memberStore,
+            String(guildId),
+            userId,
+        )
+        const possibleNames = [
+            member?.nick,
+            member?.nickname,
+            member?.displayName,
+            member?.username,
+            member?.user?.globalName,
+            member?.user?.global_name,
+            member?.user?.displayName,
+            member?.user?.username,
+        ]
+        if (possibleNames.some(name =>
+            typeof name === 'string' && name.trim().toLocaleLowerCase() === expected
+        )) return userId
+    }
+
+    // A one-person typing row is unambiguous even when the member cache has
+    // not populated the display name yet.
+    return typing.typingUserIds.length === 1
+        ? String(typing.typingUserIds[0])
+        : undefined
+}
+
+/**
+ * Some Discord custom typing indicators put "Name is typing..." in one
+ * Design.Text string instead of rendering Name as a separate child element.
+ * Split only the username into a nested Text with its role color.
+ */
+function colorCustomTypingTextTree(
+    node: any,
+    context: TypingColorContext,
+    typing: CustomTypingTextContext,
+    depth = 0,
+): any {
     if (depth > 20 || node == null) return node
     if (Array.isArray(node)) {
         let changed = false
         const next = node.map(child => {
-            const patched = colorDesignTextNodes(child, color, depth + 1)
+            const patched = colorCustomTypingTextTree(child, context, typing, depth + 1)
             if (patched !== child) changed = true
             return patched
         })
@@ -539,28 +595,54 @@ function colorDesignTextNodes(node: any, color: string, depth = 0): any {
     }
     if (!React?.isValidElement?.(node)) return node
 
-    const oldChildren = node.props?.children
-    const newChildren = colorDesignTextNodes(oldChildren, color, depth + 1)
-    const isText = node.type === Design?.Text
-    if (!isText && newChildren === oldChildren) return node
+    const children = node.props?.children
+    if (node.type === Design?.Text && typeof children === 'string') {
+        const index = children.indexOf(typing.username)
+        if (index >= 0) {
+            const userId = findCustomTypingUserId(context, typing)
+            const guildId = typing.channel?.guild_id ?? typing.channel?.guildId
+            const settings = readSettings(context.storage)
+            const color = userId && guildId
+                ? roleColor(context, String(guildId), userId, settings.skipNeutralColors)
+                : undefined
+            if (color) {
+                const coloredName = React.createElement(
+                    Design.Text,
+                    { style: [node.props?.style, { color }] },
+                    typing.username,
+                )
+                const parts = [
+                    children.slice(0, index),
+                    coloredName,
+                    children.slice(index + typing.username.length),
+                ].filter(part => part !== '')
+                return React.cloneElement(node, { children: parts })
+            }
+        }
+    }
 
-    return React.cloneElement(node, {
-        ...(isText ? { style: [node.props?.style, { color }] } : {}),
-        ...(newChildren !== oldChildren ? { children: newChildren } : {}),
-    })
+    const nextChildren = colorCustomTypingTextTree(children, context, typing, depth + 1)
+    return nextChildren === children
+        ? node
+        : React.cloneElement(node, { children: nextChildren })
 }
 
 /**
- * Better Typing Indicators replaces Discord's native Text with its own
- * TypingText -> TypingUser component tree. Wrap those components at render time
- * so the actual username Text gets the role color after BTI has transformed it.
+ * Better Typing Indicators may replace native text with TypingText/TypingUser,
+ * or wrap Discord's custom indicator component. Handle each at render time so
+ * the actual name gets colored after the other plugin has transformed the tree.
  */
-function wrapBetterTypingTree(node: any, context: TypingColorContext, depth = 0): any {
+function wrapBetterTypingTree(
+    node: any,
+    context: TypingColorContext,
+    depth = 0,
+    typingContext?: BetterTypingRenderContext,
+): any {
     if (depth > 20 || node == null) return node
     if (Array.isArray(node)) {
         let changed = false
         const next = node.map(child => {
-            const patched = wrapBetterTypingTree(child, context, depth + 1)
+            const patched = wrapBetterTypingTree(child, context, depth + 1, typingContext)
             if (patched !== child) changed = true
             return patched
         })
@@ -569,7 +651,7 @@ function wrapBetterTypingTree(node: any, context: TypingColorContext, depth = 0)
     if (!React?.isValidElement?.(node) || typeof node.type !== 'function') {
         if (React?.isValidElement?.(node)) {
             const oldChildren = node.props?.children
-            const newChildren = wrapBetterTypingTree(oldChildren, context, depth + 1)
+            const newChildren = wrapBetterTypingTree(oldChildren, context, depth + 1, typingContext)
             return newChildren === oldChildren ? node : React.cloneElement(node, { children: newChildren })
         }
         return node
@@ -587,19 +669,32 @@ function wrapBetterTypingTree(node: any, context: TypingColorContext, depth = 0)
         typeof props.renderName === 'function' &&
         props.settings
 
-    if (isBetterTypingText || isBetterTypingUser) {
+    // This matches Better Typing Indicators' CustomTypingIndicator wrapper
+    // (config + username) and native Discord variants with the same props.
+    const isCustomTypingIndicator =
+        'config' in props &&
+        typeof props.username === 'string'
+
+    if (isBetterTypingText || isBetterTypingUser || isCustomTypingIndicator) {
         const Original = node.type
-        let Wrapped = betterTypingWrappers.get(Original)
+        const wrapperKind = isBetterTypingText
+            ? 'text'
+            : isBetterTypingUser
+                ? 'user'
+                : 'custom'
+        let wrappers = betterTypingWrappers.get(Original)
+        if (!wrappers) {
+            wrappers = new Map<string, any>()
+            betterTypingWrappers.set(Original, wrappers)
+        }
+
+        let Wrapped = wrappers.get(wrapperKind)
         if (!Wrapped) {
-            if (isBetterTypingText) {
+            if (wrapperKind === 'text') {
                 Wrapped = function RoleColorTypingTextWrapper(originalProps: any) {
-                    return wrapBetterTypingTree(
-                        Original(originalProps),
-                        context,
-                        0,
-                    )
+                    return wrapBetterTypingTree(Original(originalProps), context)
                 }
-            } else {
+            } else if (wrapperKind === 'user') {
                 Wrapped = function RoleColorTypingUserWrapper(originalProps: any) {
                     const result = Original(originalProps)
                     const channel = originalProps?.channel
@@ -616,17 +711,63 @@ function wrapBetterTypingTree(node: any, context: TypingColorContext, depth = 0)
                     )
                     return color ? colorDesignTextNodes(result, color) : result
                 }
+            } else {
+                Wrapped = function RoleColorCustomTypingIndicatorWrapper(originalProps: any) {
+                    const result = Original(originalProps)
+                    const username = originalProps?.username
+                    const channel = originalProps?.channel ?? typingContext?.channel
+                    const typingUserIds = Array.isArray(originalProps?.typingUserIds)
+                        ? originalProps.typingUserIds.map((id: any) => String(id))
+                        : (typingContext?.typingUserIds ?? []).map(id => String(id))
+                    const settings = readSettings(context.storage)
+                    if (
+                        !settings.typingIndicatorNames ||
+                        typeof username !== 'string' ||
+                        !channel ||
+                        typingUserIds.length === 0
+                    ) return result
+
+                    const customContext: CustomTypingTextContext = {
+                        username,
+                        channel,
+                        typingUserIds,
+                    }
+                    // Also recurse into BTI's transformed TypingText elements.
+                    return wrapBetterTypingTree(result, context, 0, customContext)
+                }
             }
-            betterTypingWrappers.set(Original, Wrapped)
+            wrappers.set(wrapperKind, Wrapped)
         }
-        return React.createElement(Wrapped, { ...props, key: node.key ?? undefined })
+
+        let renderProps = props
+        if (wrapperKind === 'text' && typingContext) {
+            const coloredText = colorCustomTypingTextTree(
+                props.text,
+                context,
+                {
+                    ...typingContext,
+                    username: '',
+                },
+            )
+            // Native username-split text is handled by colorTypingTextTree below.
+            // Keep this element unchanged unless the custom parent supplied a name.
+            if (coloredText !== props.text) renderProps = { ...props, text: coloredText }
+        } else if (wrapperKind === 'text' && typingContext && (typingContext as any).username) {
+            const custom = typingContext as CustomTypingTextContext
+            const coloredText = colorCustomTypingTextTree(props.text, context, custom)
+            if (coloredText !== props.text) renderProps = { ...props, text: coloredText }
+        }
+
+        return React.createElement(Wrapped, {
+            ...renderProps,
+            key: node.key ?? undefined,
+        })
     }
 
     const oldChildren = props.children
-    const newChildren = wrapBetterTypingTree(oldChildren, context, depth + 1)
+    const newChildren = wrapBetterTypingTree(oldChildren, context, depth + 1, typingContext)
     return newChildren === oldChildren ? node : React.cloneElement(node, { children: newChildren })
 }
-
 function TypingNameRenderer({
     original,
     originalProps,
@@ -643,7 +784,10 @@ function TypingNameRenderer({
 
     // First handle Better Typing Indicators' transformed TypingText/TypingUser
     // components, then fall back to Discord's original Design.Text tree.
-    const wrapped = wrapBetterTypingTree(result, context)
+    const wrapped = wrapBetterTypingTree(result, context, 0, {
+        channel,
+        typingUserIds: rawIds.map((id: any) => String(id)),
+    })
     return colorTypingTextTree(
         wrapped,
         context,
@@ -670,15 +814,22 @@ export function installTypingUserColors(context: TypingColorContext): void {
         filter,
         (typingModule: any) => {
             const component = typingModule?.default
-            if (
-                !component ||
-                typeof component.type !== 'function' ||
-                installed.has(component)
-            ) return
+            if (!component || (typeof component !== 'object' && typeof component !== 'function') || installed.has(component)) {
+                return
+            }
+
+            const target = typeof component?.type === 'function'
+                ? { parent: component, key: 'type' }
+                : typeof component?.render === 'function'
+                    ? { parent: component, key: 'render' }
+                    : typeof component === 'function'
+                        ? { parent: typingModule, key: 'default' }
+                        : undefined
+            if (!target) return
 
             installed.add(component)
             try {
-                const unpatch = after(component, 'type', (tree: any) => {
+                const unpatch = after(target.parent, target.key, (tree: any) => {
                     const renderItem = tree?.props?.renderItem
                     if (typeof renderItem !== 'function') return tree
 
