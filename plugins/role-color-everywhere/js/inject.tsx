@@ -534,6 +534,7 @@ interface CustomTypingTextContext extends BetterTypingRenderContext {
 }
 
 const betterTypingWrappers = new WeakMap<object, Map<string, any>>()
+const CUSTOM_TYPING_CONTEXT_PROP = '__roleColorTypingContext'
 
 function findCustomTypingUserId(
     context: TypingColorContext,
@@ -713,12 +714,15 @@ function wrapBetterTypingTree(
                 }
             } else {
                 Wrapped = function RoleColorCustomTypingIndicatorWrapper(originalProps: any) {
-                    const result = Original(originalProps)
-                    const username = originalProps?.username
-                    const channel = originalProps?.channel ?? typingContext?.channel
-                    const typingUserIds = Array.isArray(originalProps?.typingUserIds)
-                        ? originalProps.typingUserIds.map((id: any) => String(id))
-                        : (typingContext?.typingUserIds ?? []).map(id => String(id))
+                    const suppliedContext = originalProps?.[CUSTOM_TYPING_CONTEXT_PROP]
+                    const cleanProps = { ...originalProps }
+                    delete cleanProps[CUSTOM_TYPING_CONTEXT_PROP]
+                    const result = Original(cleanProps)
+                    const username = cleanProps?.username
+                    const channel = cleanProps?.channel ?? suppliedContext?.channel
+                    const typingUserIds = Array.isArray(cleanProps?.typingUserIds)
+                        ? cleanProps.typingUserIds.map((id: any) => String(id))
+                        : (suppliedContext?.typingUserIds ?? []).map((id: any) => String(id))
                     const settings = readSettings(context.storage)
                     if (
                         !settings.typingIndicatorNames ||
@@ -732,30 +736,29 @@ function wrapBetterTypingTree(
                         channel,
                         typingUserIds,
                     }
-                    // Also recurse into BTI's transformed TypingText elements.
-                    return wrapBetterTypingTree(result, context, 0, customContext)
+                    // Handle BTI's transformed TypingText nodes and native text-only output.
+                    const transformed = wrapBetterTypingTree(result, context, 0, customContext)
+                    return colorCustomTypingTextTree(transformed, context, customContext)
                 }
             }
             wrappers.set(wrapperKind, Wrapped)
         }
 
         let renderProps = props
-        if (wrapperKind === 'text' && typingContext) {
-            const coloredText = colorCustomTypingTextTree(
-                props.text,
-                context,
-                {
-                    ...typingContext,
-                    username: '',
-                },
-            )
-            // Native username-split text is handled by colorTypingTextTree below.
-            // Keep this element unchanged unless the custom parent supplied a name.
-            if (coloredText !== props.text) renderProps = { ...props, text: coloredText }
-        } else if (wrapperKind === 'text' && typingContext && (typingContext as any).username) {
+        if (wrapperKind === 'text' && (typingContext as CustomTypingTextContext | undefined)?.username) {
             const custom = typingContext as CustomTypingTextContext
             const coloredText = colorCustomTypingTextTree(props.text, context, custom)
             if (coloredText !== props.text) renderProps = { ...props, text: coloredText }
+        } else if (wrapperKind === 'custom') {
+            renderProps = {
+                ...props,
+                [CUSTOM_TYPING_CONTEXT_PROP]: {
+                    channel: props.channel ?? typingContext?.channel,
+                    typingUserIds: Array.isArray(props.typingUserIds)
+                        ? props.typingUserIds.map((id: any) => String(id))
+                        : (typingContext?.typingUserIds ?? []).map(id => String(id)),
+                },
+            }
         }
 
         return React.createElement(Wrapped, {
