@@ -1,4 +1,4 @@
-name: Build plugins
+name: Build plugin
 on:
   push:
   pull_request:
@@ -15,10 +15,16 @@ jobs:
         run: bun install
       - name: Build plugin
         run: bun --bun run build --plugins-dir plugins role-color-everywhere
-      - name: Package plugin
+      - name: Package and validate plugin
         run: |
           python3 scripts/package_plugin.py role-color-everywhere
-          python3 scripts/check_zip.py dist/com.lifawaz.role-color-everywhere@1.0.0.zip
+          ZIP_PATH="$(python3 - <<'PY'
+          import json
+          m=json.load(open('plugins/role-color-everywhere/manifest.json'))
+          print(f"dist/{m['id']}@{m['version']}.zip")
+          PY
+          )"
+          python3 scripts/check_zip.py "$ZIP_PATH"
       - uses: actions/upload-artifact@v4
         with:
           name: role-color-everywhere-plugin
