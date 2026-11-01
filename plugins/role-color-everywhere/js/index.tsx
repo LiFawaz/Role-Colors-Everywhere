@@ -2,7 +2,11 @@ import { getStore } from '@valenced/discord/flux'
 import { DEFAULTS } from './settings-store'
 import { SettingsComponent } from './settings'
 import { report, setLogger, TAG } from './lookup'
-import { installMessageMentionColors, installVoiceUserColors } from './inject'
+import {
+    installMessageMentionColors,
+    installTypingUserColors,
+    installVoiceUserColors,
+} from './inject'
 
 let fallbackUndo: Array<() => void> = []
 
@@ -25,6 +29,7 @@ export default plugin({
         let memberStore: any
         let channelStore: any
         let roleStore: any
+        let userStore: any
         let mentionPatchInstalled = false
 
         const installMentionsWhenReady = () => {
@@ -55,7 +60,24 @@ export default plugin({
                 roleStore = store
                 log?.info?.(`${TAG} GuildRoleStore connected`)
             }))
-            installVoiceUserColors({ getMemberStore: () => memberStore, getRoleStore: () => roleStore, storage, cleanup })
+            cleanup(getStore('UserStore', (store: any) => {
+                userStore = store
+                log?.info?.(`${TAG} UserStore connected`)
+            }))
+
+            installVoiceUserColors({
+                getMemberStore: () => memberStore,
+                getRoleStore: () => roleStore,
+                storage,
+                cleanup,
+            })
+            installTypingUserColors({
+                getMemberStore: () => memberStore,
+                getRoleStore: () => roleStore,
+                getUserStore: () => userStore,
+                storage,
+                cleanup,
+            })
         } catch (err) {
             report(`${TAG} patch setup failed`, err)
         }

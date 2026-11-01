@@ -1,12 +1,12 @@
 export interface RoleColorSettings {
-    typingUser: boolean
+    typingIndicatorNames: boolean
     userMentions: boolean
     voiceUsers: boolean
     skipNeutralColors: boolean
 }
 
 export const DEFAULTS: RoleColorSettings = {
-    typingUser: false,
+    typingIndicatorNames: true,
     userMentions: true,
     voiceUsers: true,
     skipNeutralColors: true,
@@ -15,7 +15,7 @@ export const DEFAULTS: RoleColorSettings = {
 export function normalizeSettings(value: unknown): RoleColorSettings {
     const settings = (value ?? {}) as Partial<RoleColorSettings>
     return {
-        typingUser: typeof settings.typingUser === 'boolean' ? settings.typingUser : DEFAULTS.typingUser,
+        typingIndicatorNames: typeof settings.typingIndicatorNames === 'boolean' ? settings.typingIndicatorNames : DEFAULTS.typingIndicatorNames,
         userMentions: typeof settings.userMentions === 'boolean' ? settings.userMentions : DEFAULTS.userMentions,
         voiceUsers: typeof settings.voiceUsers === 'boolean' ? settings.voiceUsers : DEFAULTS.voiceUsers,
         skipNeutralColors: typeof settings.skipNeutralColors === 'boolean' ? settings.skipNeutralColors : DEFAULTS.skipNeutralColors,

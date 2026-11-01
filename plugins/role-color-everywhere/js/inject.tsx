@@ -439,3 +439,162 @@ export function installVoiceUserColors(ctx: PatchContext & MemberContext): void 
         report(`${TAG} could not locate Discord's VoiceUserNameItem module`, err)
     }
 }
+
+
+const TYPING_TEXT_PATH = 'modules/chat/useTypingText.tsx'
+const NICKNAME_UTILS_PATH = 'utils/NicknameUtils.tsx'
+
+/**
+ * Discord's mobile typing line is rendered from useTypingText(). Its result is
+ * a localized string containing the visible typists' names. Wrap only those
+ * name substrings in nested React Native Text nodes, preserving Discord's
+ * localized wording and punctuation.
+ */
+export function installTypingUserColors(
+    ctx: PatchContext & MemberContext & { getUserStore: () => any },
+): void {
+    let nicknameUtils: any
+
+    let unsubscribeNicknames: (() => void) | undefined
+    let unsubscribeTypingText: (() => void) | undefined
+
+    try {
+        unsubscribeNicknames = getModuleWithImportedPath<any>(
+            NICKNAME_UTILS_PATH,
+            (module: any) => {
+                nicknameUtils = module?.default ?? module
+                report(`${TAG} connected mobile nickname resolver`)
+            },
+        )
+
+        unsubscribeTypingText = getModuleWithImportedPath<any>(
+            TYPING_TEXT_PATH,
+            (typingModule: any) => {
+                if (typeof typingModule?.default !== 'function') {
+                    report(`${TAG} found useTypingText module, but its default export was not patchable`)
+                    return
+                }
+
+                try {
+                    const unpatch = instead(
+                        typingModule,
+                        'default',
+                        function (args: any[], original: (...args: any[]) => any) {
+                            const result = original.apply(this, args)
+
+                            try {
+                                const settings = readSettings(ctx.storage)
+                                if (!settings.typingIndicatorNames || typeof result !== 'string' || !result) {
+                                    return result
+                                }
+
+                                const input = args?.[0] ?? {}
+                                const guildId = input.guildId ?? input.guild_id
+                                const channelId = input.channelId ?? input.channel_id
+                                const userIds = input.typingUserIds ?? input.typing_user_ids
+                                if (
+                                    guildId == null ||
+                                    channelId == null ||
+                                    !Array.isArray(userIds) ||
+                                    userIds.length === 0
+                                ) {
+                                    return result
+                                }
+
+                                const userStore = ctx.getUserStore?.()
+                                const memberStore = ctx.getMemberStore?.() ?? ctx.memberStore
+                                const TextComponent = (ReactNative as any)?.Text
+                                if (
+                                    typeof userStore?.getUser !== 'function' ||
+                                    !TextComponent ||
+                                    typeof React?.createElement !== 'function'
+                                ) {
+                                    return result
+                                }
+
+                                const parts: any[] = []
+                                let searchFrom = 0
+                                let outputFrom = 0
+                                let coloredNames = 0
+
+                                for (let index = 0; index < userIds.length; index++) {
+                                    const userId = String(userIds[index] ?? '')
+                                    if (!userId) continue
+
+                                    const user = userStore.getUser(userId)
+                                    if (!user) continue
+
+                                    const resolvedName = nicknameUtils?.getName?.(
+                                        String(guildId),
+                                        String(channelId),
+                                        user,
+                                    )
+
+                                    let name = typeof resolvedName === 'string' ? resolvedName : ''
+                                    if (!name) {
+                                        const member = getMemberRecord(memberStore, String(guildId), userId)
+                                        const nick = memberStore?.getNick?.(String(guildId), userId)
+                                            ?? member?.nick
+                                            ?? member?.nickname
+                                        name = typeof nick === 'string' && nick.trim()
+                                            ? nick.trim()
+                                            : user.globalName ?? user.global_name ?? user.username ?? ''
+                                    }
+                                    if (!name) continue
+
+                                    const start = result.indexOf(name, searchFrom)
+                                    if (start < 0) continue
+
+                                    const end = start + name.length
+                                    searchFrom = end
+
+                                    const member = getMemberRecord(memberStore, String(guildId), userId)
+                                    const color = roleColor(
+                                        ctx,
+                                        String(guildId),
+                                        userId,
+                                        settings.skipNeutralColors,
+                                        member,
+                                    )
+                                    if (!color) continue
+
+                                    if (start > outputFrom) parts.push(result.slice(outputFrom, start))
+                                    parts.push(
+                                        React.createElement(
+                                            TextComponent,
+                                            {
+                                                key: `role-color-typing-${userId}-${index}`,
+                                                style: { color },
+                                            },
+                                            name,
+                                        ),
+                                    )
+                                    outputFrom = end
+                                    coloredNames++
+                                }
+
+                                if (coloredNames === 0) return result
+
+                                parts.push(result.slice(outputFrom))
+                                return parts
+                            } catch (err) {
+                                report(`${TAG} could not color typing indicator names`, err)
+                                return result
+                            }
+                        },
+                    )
+
+                    ctx.cleanup(unpatch)
+                    report(`${TAG} patched mobile useTypingText`)
+                } catch (err) {
+                    report(`${TAG} failed to patch mobile useTypingText`, err)
+                }
+            },
+        )
+
+        if (unsubscribeNicknames) ctx.cleanup(unsubscribeNicknames)
+        if (unsubscribeTypingText) ctx.cleanup(unsubscribeTypingText)
+    } catch (err) {
+        report(`${TAG} could not locate mobile typing indicator modules`, err)
+    }
+}

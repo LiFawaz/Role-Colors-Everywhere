@@ -22,6 +22,11 @@ export function SettingsComponent({ api }: { api: any }) {
 
     return <TableRowGroup>
         <TableSwitchRow
+            label="Color Typing Indicator Names"
+            value={settings.typingIndicatorNames}
+            onValueChange={(value: boolean) => update({ typingIndicatorNames: value })}
+        />
+        <TableSwitchRow
             label="Color User Mentions"
             value={settings.userMentions}
             onValueChange={(value: boolean) => update({ userMentions: value })}

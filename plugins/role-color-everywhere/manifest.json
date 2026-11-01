@@ -3,8 +3,8 @@
   "id": "com.lifawaz.role-color-everywhere",
   "name": "Role Color Everywhere",
   "author": "Li Fawaz",
-  "description": "Colors message mentions and voice channel users with the highest non-neutral role color, with an option to include white, black and gray roles.",
-  "version": "1.0.9",
+  "description": "Colors message mentions, typing indicator names and voice channel users with the highest non-neutral role color.",
+  "version": "1.1.0",
   "dependencies": {
     "valenced.api": {
       "version": ">=1 <2"
