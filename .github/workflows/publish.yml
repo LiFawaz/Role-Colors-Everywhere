@@ -19,63 +19,62 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: oven-sh/setup-bun@v2
-
       - name: Install build dependencies
         run: bun install
-
       - name: Build plugin bundle
         run: bun --bun run build --plugins-dir plugins role-color-everywhere
-
       - name: Package and validate plugin
         run: |
           python3 scripts/package_plugin.py role-color-everywhere
-          python3 scripts/check_zip.py dist/com.lifawaz.role-color-everywhere@1.0.0.zip
-
-      - name: Prepare published pool
+          ZIP_PATH="$(python3 - <<'PY'
+          import json
+          m=json.load(open('plugins/role-color-everywhere/manifest.json'))
+          print(f"dist/{m['id']}@{m['version']}.zip")
+          PY
+          )"
+          python3 scripts/check_zip.py "$ZIP_PATH"
+          echo "ZIP_PATH=$ZIP_PATH" >> "$GITHUB_ENV"
+          echo "ZIP_NAME=$(basename "$ZIP_PATH")" >> "$GITHUB_ENV"
+      - name: Publish versioned ZIP and generate index.json
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          export POOL_DIR="$RUNNER_TEMP/valenced-pool"
-          export POOL_BRANCH="gh-pages"
-          export POOL_REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          if git clone --depth 1 --branch "$POOL_BRANCH" "$POOL_REMOTE" "$POOL_DIR" 2>/dev/null; then
+          POOL_DIR="$RUNNER_TEMP/valenced-pool"
+          POOL_REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git clone --depth 1 --branch gh-pages "$POOL_REMOTE" "$POOL_DIR" 2>/dev/null; then
             echo "Using existing gh-pages pool"
           else
             mkdir -p "$POOL_DIR"
-            git -C "$POOL_DIR" init -b "$POOL_BRANCH"
+            git -C "$POOL_DIR" init -b gh-pages
             git -C "$POOL_DIR" remote add origin "$POOL_REMOTE"
           fi
           mkdir -p "$POOL_DIR/pool"
-          cp dist/com.lifawaz.role-color-everywhere@1.0.0.zip "$POOL_DIR/pool/"
-          bun run generate-index -- --dist "$POOL_DIR/pool" --base-url "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/gh-pages/pool" --out "$POOL_DIR/index.json"
+          cp "$ZIP_PATH" "$POOL_DIR/pool/$ZIP_NAME"
+          bun run generate-index --dist "$POOL_DIR/pool" --base-url "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/gh-pages/pool" --out "$POOL_DIR/index.json"
           git -C "$POOL_DIR" config user.name "github-actions[bot]"
           git -C "$POOL_DIR" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git -C "$POOL_DIR" add pool index.json
           if git -C "$POOL_DIR" diff --cached --quiet; then
-            echo "Repository index and artifacts are already up to date"
+            echo "No repository changes to publish"
           else
-            git -C "$POOL_DIR" commit -m "Publish Role Color Everywhere 1.0.0"
-            git -C "$POOL_DIR" push origin "$POOL_BRANCH"
+            git -C "$POOL_DIR" commit -m "Publish Role Color Everywhere"
+            git -C "$POOL_DIR" push origin gh-pages
           fi
-
       - name: Verify published repository
         run: |
           python3 - <<'PY'
-          import json, os, urllib.request
+          import hashlib, json, os, urllib.request
           url = f"https://raw.githubusercontent.com/{os.environ['GITHUB_REPOSITORY']}/gh-pages/index.json"
           with urllib.request.urlopen(url, timeout=30) as response:
               data = json.load(response)
           plugin = data["plugins"]["com.lifawaz.role-color-everywhere"]
           version = plugin["channels"]["latest"]
-          artifact = plugin["versions"][version]["url"]
-          with urllib.request.urlopen(artifact, timeout=30) as response:
+          artifact = plugin["versions"][version]
+          with urllib.request.urlopen(artifact["url"], timeout=30) as response:
               payload = response.read()
-          import hashlib
-          expected = plugin["versions"][version]["sha256"]
-          actual = hashlib.sha256(payload).hexdigest()
-          assert actual == expected, (actual, expected)
-          print("Published index and ZIP verified:", url, artifact)
+          assert hashlib.sha256(payload).hexdigest() == artifact["sha256"]
+          assert len(payload) == artifact["size"]
+          print("Published index and ZIP verified:", version, url)
           PY
