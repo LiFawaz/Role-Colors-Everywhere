@@ -1,6 +1,6 @@
 import { after, before, instead } from '@valenced/patcher'
-import { getModules } from '@valenced/modules/finders'
-import { withName, withProps } from '@valenced/modules/finders/filters'
+import { getModules, lookupModules } from '@valenced/modules/finders'
+import { createFilterGenerator, FilterScopes, withName } from '@valenced/modules/finders/filters'
 import { ReactNative } from '@valenced/react'
 import { readSettings } from './settings-store'
 import { report, TAG } from './lookup'
@@ -201,11 +201,20 @@ function isNativeUpdateRows(target: any): boolean {
     }
 }
 
+// Unlike withProps('updateRows'), this checks both the module namespace and its default export.
+// Some Android native bridge modules expose updateRows only on exports.default.
+const nativeUpdateRowsFilter = createFilterGenerator(
+    (_args: [], _id: number, exports: any) =>
+        isNativeUpdateRows(exports) || isNativeUpdateRows(exports?.default),
+    () => 'role-color-everywhere.native-updateRows',
+    FilterScopes.Initialized,
+)()
+
 export function installMessageMentionColors(ctx: PatchContext & MemberContext & { channelStore: any }): void {
     const installed = new WeakSet<object>()
 
     const patchTarget = (target: any, label: string) => {
-        if (!target || typeof target !== 'object' || installed.has(target) || typeof target.updateRows !== 'function') return false
+        if (!target || typeof target !== 'object' || installed.has(target) || !isNativeUpdateRows(target)) return false
         installed.add(target)
         try {
             ctx.cleanup(before(target, 'updateRows', (args: any[]) => {
@@ -238,26 +247,33 @@ export function installMessageMentionColors(ctx: PatchContext & MemberContext & 
         }
     }
 
-    // Some Discord builds expose the native bridge directly. On others it is a Metro module
-    // whose native updateRows method must be discovered after modules initialize.
-    const nativeModules = ReactNative?.NativeModules as any
-    const directTarget = nativeModules?.DCDChatManager
-    if (directTarget && typeof directTarget.updateRows === 'function') {
-        patchTarget(directTarget, 'NativeModules.DCDChatManager')
+    const targetFromExports = (exports: any) => {
+        if (isNativeUpdateRows(exports)) return exports
+        if (isNativeUpdateRows(exports?.default)) return exports.default
+        return undefined
     }
 
+    // Some Discord builds expose the native bridge directly.
+    const nativeModules = ReactNative?.NativeModules as any
+    const directTarget = nativeModules?.DCDChatManager
+    if (patchTarget(directTarget, 'NativeModules.DCDChatManager')) return
+
+    // Search every currently initialized Metro module, checking both exports and default exports.
+    // This mirrors the working Android native-bridge lookup used by the upstream implementation.
+    for (const [exports] of lookupModules(nativeUpdateRowsFilter, { returnNamespace: true })) {
+        const target = targetFromExports(exports)
+        if (patchTarget(target, 'initialized Metro native updateRows')) return
+    }
+
+    // If the native bridge has not initialized yet, subscribe for its first initialization.
     let unsubscribe: (() => void) | undefined
     unsubscribe = getModules(
-        withProps('updateRows'),
-        (module: any) => {
-            const candidates = [module, module?.default]
-            const target = candidates.find(isNativeUpdateRows)
-            if (!target) return
-            if (patchTarget(target, 'Metro native updateRows')) {
-                unsubscribe?.()
-            }
+        nativeUpdateRowsFilter,
+        (exports: any) => {
+            const target = targetFromExports(exports)
+            if (patchTarget(target, 'late Metro native updateRows')) unsubscribe?.()
         },
-        { returnNamespace: true },
+        { max: 1, returnNamespace: true },
     )
     ctx.cleanup(unsubscribe)
 }
