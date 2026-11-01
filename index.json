@@ -8,7 +8,7 @@
       "description": "Colors message mentions and voice channel users with the highest non-neutral role color, with an option to include white, black and gray roles.",
       "author": "Li Fawaz",
       "channels": {
-        "latest": "1.0.5"
+        "latest": "1.0.6"
       },
       "versions": {
         "1.0.0": {
@@ -79,6 +79,19 @@
         "1.0.5": {
           "url": "https://raw.githubusercontent.com/LiFawaz/Role-Colors-Everywhere/gh-pages/pool/com.lifawaz.role-color-everywhere@1.0.5.zip",
           "sha256": "ddcd2ec2aa310ac2186c8cf2c1cdb40a2649c0fcb719ef4869a89995a398ca66",
+          "size": 3916,
+          "dependencies": {
+            "valenced.api": {
+              "version": ">=1 <2"
+            },
+            "discord": {
+              "version": "*"
+            }
+          }
+        },
+        "1.0.6": {
+          "url": "https://raw.githubusercontent.com/LiFawaz/Role-Colors-Everywhere/gh-pages/pool/com.lifawaz.role-color-everywhere@1.0.6.zip",
+          "sha256": "03378c0b6f9c4f2e0d58efab0ff393cee5c008c127c39e02194890e4adc5edfa",
           "size": 3916,
           "dependencies": {
             "valenced.api": {
