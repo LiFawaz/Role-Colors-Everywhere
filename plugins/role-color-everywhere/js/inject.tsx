@@ -11,7 +11,8 @@ interface PatchContext {
 }
 
 interface MemberContext {
-    memberStore: any
+    memberStore?: any
+    getMemberStore?: () => any
     getRoleStore: () => any
 }
 
@@ -119,11 +120,12 @@ function roleColor(
     skipNeutralColors: boolean,
     fallbackMember?: any,
 ): string | undefined {
-    if (!guildId || !userId) return undefined
-    const member = getMemberRecord(ctx.memberStore, guildId, userId) ?? fallbackMember
+    const memberStore = ctx.getMemberStore?.() ?? ctx.memberStore
+    const cachedMember = guildId && userId ? getMemberRecord(memberStore, guildId, userId) : undefined
+    const member = cachedMember ?? fallbackMember
     if (!member) return undefined
 
-    const roles = getAssignedRoles(member, ctx.getRoleStore(), guildId)
+    const roles = guildId ? getAssignedRoles(member, ctx.getRoleStore(), guildId) : []
     for (const role of roles) {
         const color = colorFromRole(role)
         if (!color) continue
@@ -132,7 +134,7 @@ function roleColor(
     }
 
     // Older Discord builds sometimes omit the role IDs from the cached member record.
-    const resolved = normalizeHex(member.colorString)
+    const resolved = normalizeHex(member.colorString) ?? normalizeHex(member.user?.colorString)
     if (resolved && (!skipNeutralColors || !isNeutralColor(resolved))) return resolved
     return undefined
 }
@@ -324,7 +326,12 @@ export function installVoiceUserColors(ctx: PatchContext & MemberContext): void 
                         let unpatchInner: (() => void) | undefined
                         unpatchInner = after(innerComponent, 'type', (innerResult: any) => {
                             unpatchInner?.()
-                            const nameItem = findNode(innerResult, (node) => node?.type?.name === 'VoiceUserNameItem')
+                            const nameItem = findNode(innerResult, (node) => {
+                                const type = node?.type
+                                return type?.name === 'VoiceUserNameItem'
+                                    || type?.displayName === 'VoiceUserNameItem'
+                                    || type?.render?.name === 'VoiceUserNameItem'
+                            })
                             if (nameItem?.props) nameItem.props = { ...nameItem.props, color }
                             return innerResult
                         })
