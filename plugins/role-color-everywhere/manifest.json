@@ -6,8 +6,8 @@
   "contributors": [
     "asportnoy <489484338514100234>"
   ],
-  "description": "Colors Discord message mentions and voice channel participant names using each member's top role color.",
-  "version": "1.0.1",
+  "description": "Colors mentions and voice channel users with the highest non-neutral role color, with a setting to include white, black and gray roles.",
+  "version": "1.0.2",
   "dependencies": {
     "valenced.api": {
       "version": ">=1 <2"
