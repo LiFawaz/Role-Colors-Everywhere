@@ -1,4 +1,4 @@
-import { after, before, instead } from '@valenced/patcher'
+import { before, instead } from '@valenced/patcher'
 import { getModules, lookupModules } from '@valenced/modules/finders'
 import { getModuleWithImportedPath } from '@valenced/discord/utils/modules/finders'
 import { createFilterGenerator, FilterScopes } from '@valenced/modules/finders/filters'
@@ -158,6 +158,41 @@ function roleColor(
     return undefined
 }
 
+/**
+ * VoiceUserNameItem can receive a member prop whose colorString is only a default
+ * presentation value. The member store is the same authoritative source used by
+ * the working mention patch, so always prefer that record for voice names.
+ */
+function voiceRoleColor(
+    ctx: MemberContext,
+    guildId: string,
+    userId: string,
+    skipNeutralColors: boolean,
+    fallbackMember?: any,
+): string | undefined {
+    const memberStore = ctx.getMemberStore?.() ?? ctx.memberStore
+    const cachedMember = getMemberRecord(memberStore, guildId, userId)
+    const member = cachedMember ?? fallbackMember
+    if (!member) return undefined
+
+    const resolved = normalizeHex(member.colorStrings?.primaryColor)
+        ?? normalizeHex(member.colorString)
+    if (resolved && (!skipNeutralColors || !isNeutralColor(resolved))) return resolved
+
+    // Only use assigned roles when the member's resolved color is absent or neutral.
+    const roles = getAssignedRoles(member, ctx.getRoleStore(), guildId)
+    for (const role of roles) {
+        const color = normalizeHex(role?.colorStrings?.primaryColor) ?? colorFromRole(role)
+        if (!color) continue
+        if (skipNeutralColors && isNeutralColor(color)) continue
+        return color
+    }
+
+    // Do not trust the voice component's user.colorString fallback: it can be the
+    // app's default text color rather than a color granted by a guild role.
+    return undefined
+}
+
 function patchComponents(component: any, transform: (node: any) => any): any {
     if (Array.isArray(component)) return component.map((child) => patchComponents(child, transform))
     if (!component || typeof component !== 'object') return component
@@ -304,8 +339,8 @@ const VOICE_USER_NAME_ITEM_PATH = 'modules/guild_sidebar/native/VoiceUserNameIte
 /**
  * Patch Discord's exact voice-name component instead of its parent row.
  * VoiceUserNameItem receives { guildId, user, member } and returns a Text
- * element as its first child. The design Text component accepts a hex color
- * through its "color" prop.
+ * element as its first child. Apply the role hex through React Native's style
+ * prop so Discord's semantic color resolver cannot turn it into black.
  */
 export function installVoiceUserColors(ctx: PatchContext & MemberContext): void {
     let unsubscribe: (() => void) | undefined
@@ -344,7 +379,7 @@ export function installVoiceUserColors(ctx: PatchContext & MemberContext): void 
                                 const userId = props.user?.id ?? props.userId ?? props.user_id
                                 if (guildId == null || userId == null) return result
 
-                                const color = roleColor(
+                                const color = voiceRoleColor(
                                     ctx,
                                     String(guildId),
                                     String(userId),
@@ -362,7 +397,10 @@ export function installVoiceUserColors(ctx: PatchContext & MemberContext): void 
                                 }
 
                                 // The first child is Discord's design Text element containing the name.
-                                const coloredName = React.cloneElement(nameElement, { color })
+                                // style is forwarded to React Native Text and reliably accepts raw hex values.
+                                const coloredName = React.cloneElement(nameElement, {
+                                    style: [nameElement.props.style, { color }],
+                                })
                                 return React.cloneElement(result, {
                                     children: [coloredName, ...children.slice(1)],
                                 })
