@@ -1,7 +1,8 @@
 import { after, before, instead } from '@valenced/patcher'
 import { getModules, lookupModules } from '@valenced/modules/finders'
+import { getModuleWithImportedPath } from '@valenced/discord/utils/modules/finders'
 import { createFilterGenerator, FilterScopes } from '@valenced/modules/finders/filters'
-import { ReactNative } from '@valenced/react'
+import { React, ReactNative } from '@valenced/react'
 import { readSettings } from './settings-store'
 import { report, TAG } from './lookup'
 
@@ -298,159 +299,90 @@ export function installMessageMentionColors(ctx: PatchContext & MemberContext & 
     ctx.cleanup(unsubscribe)
 }
 
-function componentName(type: any): string | undefined {
-    return type?.displayName
-        ?? type?.name
-        ?? type?.render?.displayName
-        ?? type?.render?.name
-        ?? type?.type?.displayName
-        ?? type?.type?.name
-}
+const VOICE_USER_NAME_ITEM_PATH = 'modules/guild_sidebar/native/VoiceUserNameItem.tsx'
 
-function findNode(root: any, predicate: (node: any) => boolean, seen = new Set<any>()): any {
-    if (!root || typeof root !== 'object' || seen.has(root)) return undefined
-    seen.add(root)
-    if (predicate(root)) return root
-
-    // React trees may keep descendants under props or other wrapper objects.
-    for (const key of Object.keys(root)) {
-        if (key === '_owner' || key === '_store' || key === '_source' || key === 'ref') continue
-        const value = root[key]
-        if (!value || typeof value !== 'object') continue
-        const found = findNode(value, predicate, seen)
-        if (found) return found
-    }
-    return undefined
-}
-
-function isVoiceUserConnectedExport(candidate: any): boolean {
-    return candidate?.name === 'VoiceUserConnected'
-        || candidate?.displayName === 'VoiceUserConnected'
-        || candidate?.type?.name === 'VoiceUserConnected'
-        || candidate?.type?.displayName === 'VoiceUserConnected'
-        || candidate?.render?.name === 'VoiceUserConnected'
-        || candidate?.render?.displayName === 'VoiceUserConnected'
-}
-
-const voiceUserConnectedFilter = createFilterGenerator(
-    (_args: [], _id: number, exports: any) =>
-        isVoiceUserConnectedExport(exports) || isVoiceUserConnectedExport(exports?.default),
-    () => 'role-color-everywhere.VoiceUserConnected',
-    FilterScopes.Initialized,
-)()
-
-function voiceComponentTarget(namespace: any): { parent: any; key: string } | undefined {
-    const component = namespace?.default
-    if (typeof component === 'function') return { parent: namespace, key: 'default' }
-    if (component && typeof component.type === 'function') return { parent: component, key: 'type' }
-    if (component && typeof component.render === 'function') return { parent: component, key: 'render' }
-    return undefined
-}
-
+/**
+ * Patch Discord's exact voice-name component instead of its parent row.
+ * VoiceUserNameItem receives { guildId, user, member } and returns a Text
+ * element as its first child. The design Text component accepts a hex color
+ * through its "color" prop.
+ */
 export function installVoiceUserColors(ctx: PatchContext & MemberContext): void {
-    let installed = false
     let unsubscribe: (() => void) | undefined
-    let missingColorReported = false
 
-    unsubscribe = getModules(
-        voiceUserConnectedFilter,
-        (voiceModule: any) => {
-            if (installed) return
-            const target = voiceComponentTarget(voiceModule)
-            if (!target) return
-            installed = true
-            report(`${TAG} found VoiceUserConnected component`)
+    try {
+        unsubscribe = getModuleWithImportedPath<any>(
+            VOICE_USER_NAME_ITEM_PATH,
+            (voiceModule: any) => {
+                const component = voiceModule?.default
+                const target = typeof component === 'function'
+                    ? { parent: voiceModule, key: 'default' }
+                    : component && typeof component.type === 'function'
+                        ? { parent: component, key: 'type' }
+                        : component && typeof component.render === 'function'
+                            ? { parent: component, key: 'render' }
+                            : undefined
 
-            try {
-                ctx.cleanup(instead(target.parent, target.key, function (args: any[], original: (...args: any[]) => any) {
-                    const result = original.apply(this, args)
-                    const settings = readSettings(ctx.storage)
-                    if (!settings.voiceUsers || !result?.type) return result
+                if (!target) {
+                    report(`${TAG} found VoiceUserNameItem module, but its default export was not patchable`)
+                    return
+                }
 
-                    const props = args?.[0] ?? {}
-                    const member = props?.member ?? props?.voiceState?.member ?? props?.user?.member
-                    const fallbackMember = member ?? props?.user
-                    const guildId = props?.guildId
-                        ?? props?.guild_id
-                        ?? props?.guild?.id
-                        ?? props?.channel?.guild_id
-                        ?? member?.guildId
-                        ?? member?.guild_id
-                    const userId = props?.userId
-                        ?? props?.user_id
-                        ?? member?.userId
-                        ?? member?.user_id
-                        ?? member?.user?.id
-                        ?? member?.id
-                        ?? props?.user?.id
-                    const color = roleColor(
-                        ctx,
-                        guildId == null ? undefined : String(guildId),
-                        userId == null ? undefined : String(userId),
-                        settings.skipNeutralColors,
-                        fallbackMember,
-                    )
-                    if (!color) {
-                        if (!missingColorReported) {
-                            missingColorReported = true
-                            report(`${TAG} voice row was found but member role color was unavailable`)
-                        }
-                        return result
-                    }
+                try {
+                    const unpatch = instead(
+                        target.parent,
+                        target.key,
+                        function (args: any[], original: (...args: any[]) => any) {
+                            const result = original.apply(this, args)
 
-                    const applyVoiceNameColor = (tree: any): boolean => {
-                        const nameItem = findNode(
-                            tree,
-                            (node) => componentName(node?.type) === 'VoiceUserNameItem',
-                        )
-                        if (!nameItem?.props) return false
-                        nameItem.props = { ...nameItem.props, color }
-                        return true
-                    }
+                            try {
+                                const settings = readSettings(ctx.storage)
+                                if (!settings.voiceUsers || !result?.props) return result
 
-                    // Apply immediately when the name node is already present.
-                    if (applyVoiceNameColor(result)) return result
+                                const props = args?.[0] ?? {}
+                                const guildId = props.guildId ?? props.guild_id
+                                const userId = props.user?.id ?? props.userId ?? props.user_id
+                                if (guildId == null || userId == null) return result
 
-                    // Otherwise patch the wrapped row component when it renders its descendants.
-                    const innerComponent = result.type
-                    const innerKey = innerComponent && typeof innerComponent === 'object'
-                        ? (typeof innerComponent.type === 'function'
-                            ? 'type'
-                            : typeof innerComponent.render === 'function'
-                                ? 'render'
-                                : undefined)
-                        : undefined
-                    if (innerKey) {
-                        let unpatchInner: (() => void) | undefined
-                        try {
-                            unpatchInner = after(innerComponent, innerKey, (innerResult: any) => {
-                                unpatchInner?.()
-                                try {
-                                    if (!applyVoiceNameColor(innerResult)) {
-                                        report(`${TAG} VoiceUserNameItem was not found in the rendered voice row`)
-                                    }
-                                } catch (err) {
-                                    report(`${TAG} could not apply voice participant color`, err)
+                                const color = roleColor(
+                                    ctx,
+                                    String(guildId),
+                                    String(userId),
+                                    settings.skipNeutralColors,
+                                    props.member,
+                                )
+                                if (!color) return result
+
+                                const children = result.props.children
+                                if (!Array.isArray(children) || !children.length) return result
+
+                                const nameElement = children[0]
+                                if (!nameElement?.props || typeof React?.cloneElement !== 'function') {
+                                    return result
                                 }
-                                return innerResult
-                            })
-                        } catch (err) {
-                            report(`${TAG} failed to hook the rendered voice row`, err)
-                        }
-                    } else {
-                        report(`${TAG} voice row has no patchable inner component`)
-                    }
-                    return result
-                }))
-                report(`${TAG} voice participant color patch installed`)
-                unsubscribe?.()
-            } catch (err) {
-                installed = false
-                report(`${TAG} failed to patch VoiceUserConnected`, err)
-            }
-        },
-        { max: 1, returnNamespace: true },
-    )
 
-    ctx.cleanup(() => unsubscribe?.())
+                                // The first child is Discord's design Text element containing the name.
+                                const coloredName = React.cloneElement(nameElement, { color })
+                                return React.cloneElement(result, {
+                                    children: [coloredName, ...children.slice(1)],
+                                })
+                            } catch (err) {
+                                report(`${TAG} could not color a voice participant name`, err)
+                                return result
+                            }
+                        },
+                    )
+
+                    ctx.cleanup(unpatch)
+                    report(`${TAG} patched VoiceUserNameItem.default`)
+                } catch (err) {
+                    report(`${TAG} failed to patch VoiceUserNameItem.default`, err)
+                }
+            },
+        )
+
+        if (unsubscribe) ctx.cleanup(unsubscribe)
+    } catch (err) {
+        report(`${TAG} could not locate Discord's VoiceUserNameItem module`, err)
+    }
 }
